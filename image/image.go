@@ -9,14 +9,18 @@ import (
 	"unsafe"
 
 	"image/color"
+	"image/draw"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 
+	"github.com/golang/freetype"
+	"github.com/golang/freetype/truetype"
 	"github.com/golang/glog"
 	"github.com/nsf/termbox-go"
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
+	"golang.org/x/image/font/gofont/goregular"
 )
 
 const defaultRatio float64 = 7.0 / 3.0 // The terminal's default cursor width/height ratio
@@ -54,7 +58,8 @@ func canvasSize() (int, int, float64) {
 		panic(err)
 	}
 	rows, cols, width, height := size[0], size[1], size[2], size[3]
-
+	// For the address
+	height -= 1
 	var whratio = defaultRatio
 	if width > 0 && height > 0 {
 		whratio = float64(height/rows) / float64(width/cols)
@@ -113,10 +118,10 @@ func max(values ...float64) float64 {
 	return m
 }
 
-func draw(img image.Image) {
+func drawImgToTerminal(img image.Image, title string) {
 	// Get terminal size and cursor width/height ratio
 	width, height, whratio := canvasSize()
-
+	// Subtract one for another line to write to
 	bounds := img.Bounds()
 	imgW, imgH := bounds.Dx(), bounds.Dy()
 
@@ -126,7 +131,16 @@ func draw(img image.Image) {
 	width, height = int(float64(imgW)/imgScale), int(float64(imgH)/(imgScale*whratio))
 
 	termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
-	for y := 0; y < height; y++ {
+	white := termbox.ColorWhite
+	for index, char := range title {
+		if index >= width {
+			break
+		}
+		termbox.SetCell(index, 0, char, white, termbox.ColorBlack)
+	}
+
+	// Start down one for the title
+	for y := 1; y < height; y++ {
 		for x := 0; x < width; x++ {
 			// Calculate average color for the corresponding image rectangle
 			// fitting in this cell. We use a half-block trick, wherein the
@@ -146,32 +160,28 @@ func draw(img image.Image) {
 	termbox.Flush()
 }
 
-func display(img image.Image) error {
-	draw(img)
+func display(img image.Image, title string) error {
+	drawImgToTerminal(img, title)
 
 	for {
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey:
-			if ev.Key == termbox.KeyEsc || ev.Ch == 'q' {
-
-				return nil
-			}
+			return nil
 		case termbox.EventResize:
-			draw(img)
+			drawImgToTerminal(img, title)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
 
-func DisplaySVG(imgData io.Reader) {
+func DisplaySVG(imgData io.Reader, title string) {
 	w, h := 512, 512
 
 	icon, _ := oksvg.ReadIconStream(imgData)
 	icon.SetTarget(0, 0, float64(w), float64(h))
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	icon.Draw(rasterx.NewDasher(w, h, rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())), 1)
-	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
 
 	err := termbox.Init()
 	if err != nil {
@@ -180,10 +190,35 @@ func DisplaySVG(imgData io.Reader) {
 	defer termbox.Close()
 	termbox.SetOutputMode(termbox.Output256)
 
-	display(rgba)
+	display(rgba, title)
+}
+func addLabel(img image.Image, x, y int, size float64, label string) image.Image {
+	bounds := img.Bounds()
+	newImg := image.NewRGBA(bounds)
+	draw.Draw(newImg, newImg.Rect, img, bounds.Min, draw.Src)
+	var white = color.RGBA{255, 0, 255, 255}
+
+	col := image.NewUniform(white)
+	ttF, err := truetype.Parse(goregular.TTF)
+	if err != nil {
+		glog.Fatal("couldn't load fonts.")
+	}
+	ctx := freetype.NewContext()
+	pt := freetype.Pt(x, y+int(ctx.PointToFixed(size)>>6))
+	ctx.SetSrc(col)
+	ctx.SetDst(newImg)
+	ctx.SetFont(ttF)
+	ctx.SetFontSize(size)
+	ctx.SetClip(bounds)
+	_, err = ctx.DrawString(label, pt)
+	if err != nil {
+		glog.Fatal("could not draw title.")
+	}
+	//	glog.Infof("%v", p)
+	return newImg
 }
 
-func DisplayImage(imgData io.Reader) {
+func DisplayImage(imgData io.Reader, title string) {
 	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
 
 	err := termbox.Init()
@@ -192,11 +227,10 @@ func DisplayImage(imgData io.Reader) {
 	}
 	defer termbox.Close()
 	termbox.SetOutputMode(termbox.Output256)
-	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
 	img, _, err := image.Decode(imgData)
 	if err != nil {
 		glog.Errorf("could not decode image data")
 	}
-
-	display(img)
+	//panic("doh")
+	display(img, title)
 }

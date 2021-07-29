@@ -42,6 +42,7 @@ func grabMonkey() {
 	var addressBuilder strings.Builder
 	addressBuilder.WriteString("https://monkey.banano.cc/api/v1/monkey/")
 	addressBuilder.WriteString(string(publicAddr))
+	addressBuilder.WriteString("?format=png&size=1000")
 	response, err := http.Get(addressBuilder.String())
 	if err != nil {
 		glog.Fatalf("could not get monkey %v", err)
@@ -50,8 +51,8 @@ func grabMonkey() {
 	if response.StatusCode != 200 {
 		glog.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
 	}
-	glog.Info("About to display.")
-	image.DisplaySVG(response.Body)
+
+	image.DisplayImage(response.Body, string(publicAddr))
 }
 
 func main() {

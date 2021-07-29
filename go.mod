@@ -10,6 +10,9 @@ require (
 	github.com/go-chi/render v1.0.1
 	github.com/golang/glog v0.0.0-20210429001901-424d2337a529
 	github.com/nsf/termbox-go v1.1.1
+	github.com/srwiley/oksvg v0.0.0-20210519022825-9fc0c575d5fe // indirect
+	github.com/srwiley/rasterx v0.0.0-20210519020934-456a8d69b780 // indirect
 	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
+	golang.org/x/image v0.0.0-20210628002857-a66eb6448b8d // indirect
 	golang.org/x/sys v0.0.0-20210630005230-0f9fa26af87c // indirect
 )

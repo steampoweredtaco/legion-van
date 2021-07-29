@@ -1,7 +1,6 @@
 package image
 
 import (
-	"fmt"
 	"image"
 	"io"
 	"os"
@@ -10,11 +9,14 @@ import (
 	"unsafe"
 
 	"image/color"
+	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 
 	"github.com/golang/glog"
 	"github.com/nsf/termbox-go"
+	"github.com/srwiley/oksvg"
+	"github.com/srwiley/rasterx"
 )
 
 const defaultRatio float64 = 7.0 / 3.0 // The terminal's default cursor width/height ratio
@@ -144,15 +146,9 @@ func draw(img image.Image) {
 	termbox.Flush()
 }
 
-func display(img io.Reader) error {
-	imgData, _, err := image.Decode(img)
-	if err != nil {
-		return fmt.Errorf("could not decode image file: %w", err)
-	}
+func display(img image.Image) error {
+	draw(img)
 
-	draw(imgData)
-
-	println("huh")
 	for {
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey:
@@ -161,25 +157,46 @@ func display(img io.Reader) error {
 				return nil
 			}
 		case termbox.EventResize:
-			draw(imgData)
+			draw(img)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
 
+func DisplaySVG(imgData io.Reader) {
+	w, h := 512, 512
+
+	icon, _ := oksvg.ReadIconStream(imgData)
+	icon.SetTarget(0, 0, float64(w), float64(h))
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	icon.Draw(rasterx.NewDasher(w, h, rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())), 1)
+	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
+
+	err := termbox.Init()
+	if err != nil {
+		glog.Fatalf("could not int termbox %v", err)
+	}
+	defer termbox.Close()
+	termbox.SetOutputMode(termbox.Output256)
+
+	display(rgba)
+}
+
 func DisplayImage(imgData io.Reader) {
 	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
 
 	err := termbox.Init()
-	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
 	if err != nil {
-		glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
-		panic(err)
+		glog.Fatalf("could not int termbox %v", err)
 	}
 	defer termbox.Close()
-	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
 	termbox.SetOutputMode(termbox.Output256)
 	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
-	display(imgData)
+	img, _, err := image.Decode(imgData)
+	if err != nil {
+		glog.Errorf("could not decode image data")
+	}
+
+	display(img)
 }

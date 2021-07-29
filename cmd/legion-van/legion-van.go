@@ -50,7 +50,8 @@ func grabMonkey() {
 	if response.StatusCode != 200 {
 		glog.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
 	}
-	image.DisplayImage(response.Body)
+	glog.Info("About to display.")
+	image.DisplaySVG(response.Body)
 }
 
 func main() {

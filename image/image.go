@@ -17,6 +17,7 @@ import (
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
 	"github.com/golang/glog"
+	"github.com/mattn/go-runewidth"
 	"github.com/nsf/termbox-go"
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
@@ -58,8 +59,6 @@ func canvasSize() (int, int, float64) {
 		panic(err)
 	}
 	rows, cols, width, height := size[0], size[1], size[2], size[3]
-	// For the address
-	height -= 1
 	var whratio = defaultRatio
 	if width > 0 && height > 0 {
 		whratio = float64(height/rows) / float64(width/cols)
@@ -118,6 +117,19 @@ func max(values ...float64) float64 {
 	return m
 }
 
+func tbprint(x, y int, fg, bg termbox.Attribute, msg string) {
+	originalX := x
+	for _, c := range msg {
+		if c == '\n' {
+			x = originalX
+			y++
+			continue
+		}
+		termbox.SetCell(x, y, c, fg, bg)
+		x += runewidth.RuneWidth(c)
+	}
+}
+
 func drawImgToTerminal(img image.Image, title string) {
 	// Get terminal size and cursor width/height ratio
 	width, height, whratio := canvasSize()
@@ -132,15 +144,9 @@ func drawImgToTerminal(img image.Image, title string) {
 
 	termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
 	white := termbox.ColorWhite
-	for index, char := range title {
-		if index >= width {
-			break
-		}
-		termbox.SetCell(index, 0, char, white, termbox.ColorBlack)
-	}
+	black := termbox.ColorBlack
 
-	// Start down one for the title
-	for y := 1; y < height; y++ {
+	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			// Calculate average color for the corresponding image rectangle
 			// fitting in this cell. We use a half-block trick, wherein the
@@ -157,6 +163,7 @@ func drawImgToTerminal(img image.Image, title string) {
 			termbox.SetCell(x, y, '▄', colorDown, colorUp)
 		}
 	}
+	tbprint(0, 0, white, black, title)
 	termbox.Flush()
 }
 

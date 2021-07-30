@@ -6,6 +6,7 @@ require (
 	github.com/Pallinder/go-randomdata v1.2.0 // indirect
 	github.com/bbedward/crypto/ed25519 v0.0.0-20200408155757-fff4d9311ac0
 	github.com/bbedward/nano v0.0.0-20200816190148-07c73bdcaff6
+	github.com/eiannone/keyboard v0.0.0-20200508000154-caf4b762e807 // indirect
 	github.com/go-chi/chi/v5 v5.0.3
 	github.com/go-chi/docgen v1.2.0
 	github.com/go-chi/render v1.0.1

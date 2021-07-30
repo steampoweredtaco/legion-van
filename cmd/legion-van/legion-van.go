@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Pallinder/go-randomdata"
 	"github.com/bbedward/nano/address"
+	"github.com/eiannone/keyboard"
 	"github.com/golang/glog"
 	"github.com/steampoweredtaco/legion-van/bananoutils"
 	"github.com/steampoweredtaco/legion-van/image"
@@ -88,97 +90,108 @@ func (monkey MonkeyStats) MarshalJSON() ([]byte, error) {
 	return data, nil
 }
 
-func generateFlamingMonkeys(targetDir string) {
-
+func generateFlamingMonkeys(ctx context.Context, targetDir string) <-chan string {
+	foundMonkeyChan := make(chan string, 100)
 	getStatsURL := "https://monkey.banano.cc/api/v1/monkey/dtl"
-	var addressesToWalletKey = make(map[bananoutils.Account]string, 1000)
-	addresses := make([]string, 0, 1000)
-	for i := 0; i < 10000; i++ {
-		privateKey, publicAddr, err := bananoutils.GeneratePrivateKeyAndFirstPublicAddress()
-		if err != nil {
-			panic(err)
-		}
-		addressesToWalletKey[publicAddr] = privateKey
-		addresses = append(addresses, string(publicAddr))
-	}
 
-	jsonBody := make(map[string][]string)
-	jsonBody["addresses"] = addresses
-	jsonData := make([]byte, 1000)
-	err := codec.NewEncoderBytes(&jsonData, jsonHandler).Encode(jsonBody)
-	if err != nil {
-		glog.Errorf("could not marshal addresses for request %w", err)
-	}
-	response, err := http.Post(getStatsURL, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		glog.Errorf("Could not get monkey stats %w", err)
-	}
+	go func() {
 
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		glog.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
-	}
-
-	results := make(map[string]MonkeyStats)
-	glog.Infof("%+v", &results)
-	if results == nil {
-		glog.Info("yes nill?!")
-	}
-	err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
-	if err != nil {
-		glog.Fatalf("could not unmarshal response: %s", err)
-	}
-
-	monKeys := make([]MonkeyStats, 0, 1000)
-	for address, monkey := range results {
-		monKeys = append(monKeys, monkey)
-		monKeys[len(monKeys)-1].PublicAddress = address
-		monKeys[len(monKeys)-1].PrivateKey = addressesToWalletKey[bananoutils.Account(address)]
-	}
-
-	monkeyCount := 0
-	for _, monkey := range monKeys {
-		if monkey.Misc != "none" && strings.HasPrefix(monkey.Misc, "flamethrower") {
-			monkeyCount++
-			monkeyPNG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
-			var monkeyPNGTee bytes.Buffer
-
-			monkeyPNG = io.TeeReader(monkeyPNG, &monkeyPNGTee)
-			if !*config.disablePreview {
-				image.DisplayImage(monkeyPNG, monkey.PublicAddress+"\n"+addressesToWalletKey[bananoutils.Account(monkey.PublicAddress)])
-			} else {
-				// Have to read for the tee to work
-				_, err = io.ReadAll(monkeyPNG)
+		defer close(foundMonkeyChan)
+		for {
+			var addressesToWalletKey = make(map[bananoutils.Account]string, 1000)
+			addresses := make([]string, 0, 1000)
+			for i := 0; i < 10000; i++ {
+				privateKey, publicAddr, err := bananoutils.GeneratePrivateKeyAndFirstPublicAddress()
 				if err != nil {
-					glog.Fatalf("could not read monkey, so sad: %s", err)
+					panic(err)
+				}
+				addressesToWalletKey[publicAddr] = privateKey
+				addresses = append(addresses, string(publicAddr))
+			}
+
+			jsonBody := make(map[string][]string)
+			jsonBody["addresses"] = addresses
+			jsonData := make([]byte, 1000)
+			err := codec.NewEncoderBytes(&jsonData, jsonHandler).Encode(jsonBody)
+			if err != nil {
+				glog.Errorf("could not marshal addresses for request %w", err)
+			}
+			response, err := http.Post(getStatsURL, "application/json", bytes.NewBuffer(jsonData))
+			if err != nil {
+				glog.Errorf("Could not get monkey stats %w", err)
+			}
+
+			defer response.Body.Close()
+			if response.StatusCode != 200 {
+				glog.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
+			}
+
+			results := make(map[string]MonkeyStats)
+			err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
+			if err != nil {
+				glog.Fatalf("could not unmarshal response: %s", err)
+			}
+
+			monKeys := make([]MonkeyStats, 0, 1000)
+			for address, monkey := range results {
+				monKeys = append(monKeys, monkey)
+				monKeys[len(monKeys)-1].PublicAddress = address
+				monKeys[len(monKeys)-1].PrivateKey = addressesToWalletKey[bananoutils.Account(address)]
+			}
+
+			monkeyCount := 0
+			for _, monkey := range monKeys {
+				select {
+				case <-ctx.Done():
+					glog.Info("Stopping the monKey horde %s", ctx.Err())
+					return
+				default:
+				}
+
+				if monkey.Misc != "none" && strings.HasPrefix(monkey.Misc, "flamethrower") {
+					monkeyCount++
+					monkeyPNG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
+					var monkeyPNGTee bytes.Buffer
+
+					monkeyPNG = io.TeeReader(monkeyPNG, &monkeyPNGTee)
+					if !*config.disablePreview {
+						image.DisplayImage(monkeyPNG, monkey.PublicAddress+"\n"+addressesToWalletKey[bananoutils.Account(monkey.PublicAddress)])
+					} else {
+						// Have to read for the tee to work
+						_, err = io.ReadAll(monkeyPNG)
+						if err != nil {
+							glog.Fatalf("could not read monkey, so sad: %s", err)
+						}
+					}
+					monkeyName := randomdata.SillyName()
+					targetName := monkeyName + "_" + monkey.PublicAddress
+					targetJson := path.Join(targetDir, targetName) + ".json"
+					targetPNG := path.Join(targetDir, targetName) + ".png"
+					foundMonkeyChan <- monkeyName
+
+					jsonData, err := json.MarshalIndent(monkey, "", "  ")
+					if err != nil {
+						glog.Fatal("couldn't marshal monKey!")
+					}
+					err = ioutil.WriteFile(targetJson, jsonData, 0600)
+					if err != nil {
+						glog.Fatal("could now write monkey, sad monkey: %s", err)
+					}
+					monkeyData, err := io.ReadAll(&monkeyPNGTee)
+					if err != nil {
+						glog.Fatal("could not write monkey image, sad monkey: %s", err)
+					}
+					err = ioutil.WriteFile(targetPNG, monkeyData, 0600)
+					if err != nil {
+						glog.Fatal("could now write monkey, sad monkey: %s", err)
+					}
+
 				}
 			}
-			monkeyName := randomdata.SillyName()
-			targetName := monkeyName + "_" + monkey.PublicAddress
-			targetJson := path.Join(targetDir, targetName) + ".json"
-			targetPNG := path.Join(targetDir, targetName) + ".png"
-			glog.Infof("Say hello to %s", monkeyName)
-
-			jsonData, err := json.MarshalIndent(monkey, "", "  ")
-			if err != nil {
-				glog.Fatal("couldn't marshal monKey!")
-			}
-			err = ioutil.WriteFile(targetJson, jsonData, 0600)
-			if err != nil {
-				glog.Fatal("could now write monkey, sad monkey: %s", err)
-			}
-			monkeyData, err := io.ReadAll(&monkeyPNGTee)
-			if err != nil {
-				glog.Fatal("could not write monkey image, sad monkey: %s", err)
-			}
-			err = ioutil.WriteFile(targetPNG, monkeyData, 0600)
-			if err != nil {
-				glog.Fatal("could now write monkey, sad monkey: %s", err)
-			}
-
+			glog.Infof("Found %d monKeys!", monkeyCount)
 		}
-	}
-	glog.Infof("Found %d monKeys!", monkeyCount)
+	}()
+	return foundMonkeyChan
 }
 
 func grabMonkey(publicAddr bananoutils.Account) io.Reader {
@@ -201,6 +214,26 @@ func grabMonkey(publicAddr bananoutils.Account) io.Reader {
 	return copy
 }
 
+// func readKeys(ctx context.Context) <-chan rune {
+// 	input := make(chan rune, 1)
+// 	go func() {
+// 		for {
+// 			select {
+// 			case <-ctx.Done():
+// 				return
+// 			default:
+// 			}
+// 			keyboard.GetKeys(1)
+// 			if err != nil {
+// 				glog.Fatal(err)
+// 			}
+// 			glog.Info(char)
+// 			input <- char
+// 		}
+// 	}()
+// 	return input
+// }
+
 func main() {
 	setupFlags()
 	parseFlags()
@@ -220,7 +253,52 @@ func main() {
 	if stat.Mode().Perm() != 0700 {
 		glog.Fatal("will not run because %s is not set to 0700 permissions, you don't want anyone reading your keys do you?")
 	}
-	//grabMonkey()
-	generateFlamingMonkeys(targetDir)
 
+	ctx := context.Background()
+	//cancelCtx := context.WithCancel(ctx)
+	deadlineCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	finishedChan := make(chan struct{})
+	defer close(finishedChan)
+	go func(done chan<- struct{}) {
+		monkeyNameChan := generateFlamingMonkeys(deadlineCtx, targetDir)
+		var monkeyHeadCount uint64
+	main:
+		for {
+			select {
+			case <-deadlineCtx.Done():
+				glog.Info("Ended Monkeygedon")
+				glog.Infof("Found a total of %d monKeys", monkeyHeadCount)
+				break main
+			case monkeyName, more := <-monkeyNameChan:
+				if !more {
+					break main
+				}
+				monkeyHeadCount++
+				glog.Infof("Say hi to %s", monkeyName)
+			}
+		}
+		done <- struct{}{}
+	}(finishedChan)
+
+	keyEvent, _ := keyboard.GetKeys(1)
+	if err != nil {
+		glog.Fatal("cannot read keyboard input: ", err)
+	}
+
+	glog.Info("Push ESC or Q/q to quit.")
+main:
+	for {
+		select {
+
+		case key := <-keyEvent:
+			if key.Key != keyboard.KeyEsc && key.Rune != 'q' && key.Rune != 'Q' {
+				continue
+			}
+			cancel()
+			break main
+		case <-finishedChan:
+			cancel()
+			break main
+		}
+	}
 }

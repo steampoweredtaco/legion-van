@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Pallinder/go-randomdata"
@@ -90,108 +91,160 @@ func (monkey MonkeyStats) MarshalJSON() ([]byte, error) {
 	return data, nil
 }
 
-func generateFlamingMonkeys(ctx context.Context, targetDir string) <-chan string {
-	foundMonkeyChan := make(chan string, 100)
-	getStatsURL := "https://monkey.banano.cc/api/v1/monkey/dtl"
+type walletsDB struct {
+	publicAccounts              []string
+	publicAccountToWalletLookup map[string]string
+}
 
-	go func() {
+func generateManyWallets(amount uint) walletsDB {
+	var accountsToWalletKey = make(map[string]string, amount)
+	accounts := make([]string, 0, amount)
 
-		defer close(foundMonkeyChan)
-		for {
-			var addressesToWalletKey = make(map[bananoutils.Account]string, 1000)
-			addresses := make([]string, 0, 1000)
-			for i := 0; i < 10000; i++ {
-				privateKey, publicAddr, err := bananoutils.GeneratePrivateKeyAndFirstPublicAddress()
-				if err != nil {
-					panic(err)
-				}
-				addressesToWalletKey[publicAddr] = privateKey
-				addresses = append(addresses, string(publicAddr))
-			}
-
-			jsonBody := make(map[string][]string)
-			jsonBody["addresses"] = addresses
-			jsonData := make([]byte, 1000)
-			err := codec.NewEncoderBytes(&jsonData, jsonHandler).Encode(jsonBody)
-			if err != nil {
-				glog.Errorf("could not marshal addresses for request %w", err)
-			}
-			response, err := http.Post(getStatsURL, "application/json", bytes.NewBuffer(jsonData))
-			if err != nil {
-				glog.Errorf("Could not get monkey stats %w", err)
-			}
-
-			defer response.Body.Close()
-			if response.StatusCode != 200 {
-				glog.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
-			}
-
-			results := make(map[string]MonkeyStats)
-			err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
-			if err != nil {
-				glog.Fatalf("could not unmarshal response: %s", err)
-			}
-
-			monKeys := make([]MonkeyStats, 0, 1000)
-			for address, monkey := range results {
-				monKeys = append(monKeys, monkey)
-				monKeys[len(monKeys)-1].PublicAddress = address
-				monKeys[len(monKeys)-1].PrivateKey = addressesToWalletKey[bananoutils.Account(address)]
-			}
-
-			monkeyCount := 0
-			for _, monkey := range monKeys {
-				select {
-				case <-ctx.Done():
-					glog.Info("Stopping the monKey horde %s", ctx.Err())
-					return
-				default:
-				}
-
-				if monkey.Misc != "none" && strings.HasPrefix(monkey.Misc, "flamethrower") {
-					monkeyCount++
-					monkeyPNG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
-					var monkeyPNGTee bytes.Buffer
-
-					monkeyPNG = io.TeeReader(monkeyPNG, &monkeyPNGTee)
-					if !*config.disablePreview {
-						image.DisplayImage(monkeyPNG, monkey.PublicAddress+"\n"+addressesToWalletKey[bananoutils.Account(monkey.PublicAddress)])
-					} else {
-						// Have to read for the tee to work
-						_, err = io.ReadAll(monkeyPNG)
-						if err != nil {
-							glog.Fatalf("could not read monkey, so sad: %s", err)
-						}
-					}
-					monkeyName := randomdata.SillyName()
-					targetName := monkeyName + "_" + monkey.PublicAddress
-					targetJson := path.Join(targetDir, targetName) + ".json"
-					targetPNG := path.Join(targetDir, targetName) + ".png"
-					foundMonkeyChan <- monkeyName
-
-					jsonData, err := json.MarshalIndent(monkey, "", "  ")
-					if err != nil {
-						glog.Fatal("couldn't marshal monKey!")
-					}
-					err = ioutil.WriteFile(targetJson, jsonData, 0600)
-					if err != nil {
-						glog.Fatal("could now write monkey, sad monkey: %s", err)
-					}
-					monkeyData, err := io.ReadAll(&monkeyPNGTee)
-					if err != nil {
-						glog.Fatal("could not write monkey image, sad monkey: %s", err)
-					}
-					err = ioutil.WriteFile(targetPNG, monkeyData, 0600)
-					if err != nil {
-						glog.Fatal("could now write monkey, sad monkey: %s", err)
-					}
-
-				}
-			}
-			glog.Infof("Found %d monKeys!", monkeyCount)
+	for i := uint(0); i < amount; i++ {
+		privateWalletSeed, publicAccount, err := bananoutils.GeneratePrivateKeyAndFirstPublicAddress()
+		if err != nil {
+			panic(err)
 		}
-	}()
-	return foundMonkeyChan
+		publicAccountStr := string(publicAccount)
+
+		accountsToWalletKey[publicAccountStr] = privateWalletSeed
+		accounts = append(accounts, publicAccountStr)
+	}
+	return walletsDB{publicAccounts: accounts, publicAccountToWalletLookup: accountsToWalletKey}
+}
+
+func (db walletsDB) getAccounts() []string {
+	return db.publicAccounts
+}
+
+func (db walletsDB) lookupWalletSeed(publicAddress string) string {
+	return db.publicAccountToWalletLookup[publicAddress]
+}
+
+func (db walletsDB) encodeAccountsAsJSON() io.Reader {
+	data := make([]byte, len(db.publicAccounts)*64)
+	jsonStruct := make(map[string][]string)
+	jsonStruct["addresses"] = db.publicAccounts
+	err := codec.NewEncoderBytes(&data, jsonHandler).Encode(jsonStruct)
+	if err != nil {
+		glog.Fatalf("could not marshal addresses for request %w", err)
+	}
+	return bytes.NewBuffer(data)
+}
+
+func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats) {
+	defer close(monkeySendChan)
+
+	getStatsURL := "https://monkey.banano.cc/api/v1/monkey/dtl"
+	for {
+
+		wallets := generateManyWallets(monkeysPerRequest)
+		jsonBody := make(map[string][]string)
+		jsonBody["addresses"] = wallets.getAccounts()
+		jsonReader := wallets.encodeAccountsAsJSON()
+
+		response, err := http.Post(getStatsURL, "application/json", jsonReader)
+		if err != nil {
+			glog.Errorf("Could not get monkey stats %w", err)
+		}
+
+		defer response.Body.Close()
+		if response.StatusCode != 200 {
+			glog.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
+		}
+
+		results := make(map[string]MonkeyStats)
+		err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
+		if err != nil {
+			glog.Fatalf("could not unmarshal response: %s", err)
+		}
+
+		monKeys := make([]MonkeyStats, 0, monkeysPerRequest)
+		for address, monkey := range results {
+			monKeys = append(monKeys, monkey)
+			monKeys[len(monKeys)-1].PublicAddress = address
+			monKeys[len(monKeys)-1].PrivateKey = wallets.lookupWalletSeed(address)
+		}
+
+		for _, monkey := range monKeys {
+			select {
+			case <-ctx.Done():
+				glog.Info("Stopping the monKey horde %s", ctx.Err())
+				return
+			default:
+				monkeySendChan <- monkey
+			}
+		}
+	}
+}
+
+func writeMonkeyData(ctx context.Context, targetDir string, monkeyDataChan <-chan MonkeyStats, monkeyNameChan chan<- string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for monkey := range monkeyDataChan {
+		select {
+		case <-ctx.Done():
+			glog.Info("Stopping the monKey looting %s", ctx.Err())
+			return
+		default:
+		}
+
+		if monkey.Misc != "none" && strings.HasPrefix(monkey.Misc, "flamethrower") {
+			monkeyPNG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
+			var monkeyPNGTee bytes.Buffer
+
+			monkeyPNG = io.TeeReader(monkeyPNG, &monkeyPNGTee)
+			if !*config.disablePreview {
+				image.DisplayImage(monkeyPNG, monkey.PublicAddress+"\n"+monkey.PrivateKey)
+			} else {
+				// Have to read for the tee to work
+				_, err := io.ReadAll(monkeyPNG)
+				if err != nil {
+					glog.Fatalf("could not read monkey, so sad: %s", err)
+				}
+			}
+			monkeyName := randomdata.SillyName()
+			targetName := monkeyName + "_" + monkey.PublicAddress
+			targetJson := path.Join(targetDir, targetName) + ".json"
+			targetPNG := path.Join(targetDir, targetName) + ".png"
+			monkeyNameChan <- monkeyName
+
+			jsonData, err := json.MarshalIndent(monkey, "", "  ")
+			if err != nil {
+				glog.Fatal("couldn't marshal monKey!")
+			}
+			err = ioutil.WriteFile(targetJson, jsonData, 0600)
+			if err != nil {
+				glog.Fatal("could now write monkey, sad monkey: %s", err)
+			}
+			monkeyData, err := io.ReadAll(&monkeyPNGTee)
+			if err != nil {
+				glog.Fatal("could not write monkey image, sad monkey: %s", err)
+			}
+			err = ioutil.WriteFile(targetPNG, monkeyData, 0600)
+			if err != nil {
+				glog.Fatal("could now write monkey, sad monkey: %s", err)
+			}
+		}
+	}
+}
+
+func processMonkeyData(ctx context.Context, targetDir string, monkeyDataChan <-chan MonkeyStats, monkeyNameChan chan<- string) {
+	defer close(monkeyNameChan)
+	wg := new(sync.WaitGroup)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go writeMonkeyData(ctx, targetDir, monkeyDataChan, monkeyNameChan, wg)
+	}
+	wg.Wait()
+
+}
+func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, targetDir string) <-chan string {
+	monkeyChan := make(chan MonkeyStats, monkeysPerRequest)
+	monkeyNameChan := make(chan string, 10)
+
+	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan)
+	go processMonkeyData(ctx, targetDir, monkeyChan, monkeyNameChan)
+	return monkeyNameChan
 }
 
 func grabMonkey(publicAddr bananoutils.Account) io.Reader {
@@ -213,26 +266,6 @@ func grabMonkey(publicAddr bananoutils.Account) io.Reader {
 	io.Copy(copy, response.Body)
 	return copy
 }
-
-// func readKeys(ctx context.Context) <-chan rune {
-// 	input := make(chan rune, 1)
-// 	go func() {
-// 		for {
-// 			select {
-// 			case <-ctx.Done():
-// 				return
-// 			default:
-// 			}
-// 			keyboard.GetKeys(1)
-// 			if err != nil {
-// 				glog.Fatal(err)
-// 			}
-// 			glog.Info(char)
-// 			input <- char
-// 		}
-// 	}()
-// 	return input
-// }
 
 func main() {
 	setupFlags()
@@ -260,7 +293,7 @@ func main() {
 	finishedChan := make(chan struct{})
 	defer close(finishedChan)
 	go func(done chan<- struct{}) {
-		monkeyNameChan := generateFlamingMonkeys(deadlineCtx, targetDir)
+		monkeyNameChan := generateFlamingMonkeys(deadlineCtx, 10000, targetDir)
 		var monkeyHeadCount uint64
 	main:
 		for {

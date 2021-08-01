@@ -21,4 +21,5 @@ require (
 	golang.org/x/image v0.0.0-20210628002857-a66eb6448b8d
 	golang.org/x/net v0.0.0-20210428140749-89ef3d95e781 // indirect
 	golang.org/x/sys v0.0.0-20210630005230-0f9fa26af87c // indirect
+	gopkg.in/gographics/imagick.v3 v3.4.0
 )

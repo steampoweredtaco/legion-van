@@ -14,7 +14,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/legion-van/legion-van.go",
-            "args": ["-alsologtostderr", "-disable_preview"],
+            "args": ["-alsologtostderr", "-disable_preview", "-img_format", "png"],
             "console": "internalConsole"
         }
     ]

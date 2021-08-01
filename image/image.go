@@ -1,9 +1,12 @@
 package image
 
 import (
+	"bytes"
+	"fmt"
 	"image"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -22,6 +25,7 @@ import (
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
 	"golang.org/x/image/font/gofont/goregular"
+	"gopkg.in/gographics/imagick.v3/imagick"
 )
 
 const defaultRatio float64 = 7.0 / 3.0 // The terminal's default cursor width/height ratio
@@ -228,16 +232,62 @@ func addLabel(img image.Image, x, y int, size float64, label string) image.Image
 func DisplayImage(imgData io.Reader, title string) {
 	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
 
-	err := termbox.Init()
+	data, err := io.ReadAll(imgData)
+	if err != nil {
+		glog.Errorf("could not read monkey image data to display: %")
+		return
+	}
+	imagePNG, err := ConvertSvgToBinary(data, "png", 250)
+	if err != nil {
+		glog.Errorf("could not convert svg monkey image to png data to display: %s", err)
+		return
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(imagePNG))
+	if err != nil {
+		glog.Errorf("could not decode image data to display: %s", err)
+		return
+	}
+	err = termbox.Init()
 	if err != nil {
 		glog.Fatalf("could not int termbox %v", err)
 	}
 	defer termbox.Close()
 	termbox.SetOutputMode(termbox.Output256)
-	img, _, err := image.Decode(imgData)
-	if err != nil {
-		glog.Errorf("could not decode image data")
-	}
 	//panic("doh")
 	display(img, title)
+}
+
+type ImageFormat string
+
+const DefaultSize = 4000
+
+func Init() {
+	imagick.Initialize()
+}
+func Destroy() {
+	imagick.Terminate()
+}
+func ConvertSvgToBinary(svgData []byte, format ImageFormat, size uint) ([]byte, error) {
+	mw := imagick.NewMagickWand()
+	defer mw.Destroy()
+
+	mw.SetImageFormat("SVG")
+	pixelWand := imagick.NewPixelWand()
+	defer pixelWand.Destroy()
+
+	pixelWand.SetColor("none")
+	mw.SetBackgroundColor(pixelWand)
+	mw.SetImageUnits(imagick.RESOLUTION_PIXELS_PER_INCH)
+	density := 96.0 * float64(size) / float64(DefaultSize)
+	mw.SetResolution(density, density)
+	err := mw.ReadImageBlob(svgData)
+	if err != nil {
+		return nil, fmt.Errorf("could not read svg: %w", err)
+	}
+	mw.SetImageCompression(imagick.COMPRESSION_NO)
+	mw.SetImageCompressionQuality(100)
+	mw.SetImageFormat(strings.ToUpper(string(format)))
+	mw.ResetIterator()
+	return mw.GetImageBlob(), nil
 }

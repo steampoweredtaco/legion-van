@@ -46,7 +46,7 @@
 	// },
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "go version",
+	// "postCreateCommand": "sudo apt-get update && sudo apt-get install -y libmagickwand-dev",
 
 	// Uncomment to connect as a non-root user. More info: https://aka.ms/vscode-remote/containers/non-root.
 	"remoteUser": "vscode"

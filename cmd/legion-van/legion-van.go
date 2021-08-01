@@ -19,7 +19,7 @@ import (
 	"github.com/Pallinder/go-randomdata"
 	"github.com/bbedward/nano/address"
 	"github.com/eiannone/keyboard"
-	"github.com/golang/glog"
+	log "github.com/sirupsen/logrus"
 	"github.com/steampoweredtaco/legion-van/bananoutils"
 	"github.com/steampoweredtaco/legion-van/image"
 	"github.com/ugorji/go/codec"
@@ -159,14 +159,13 @@ func (db walletsDB) encodeAccountsAsJSON() io.Reader {
 	jsonStruct["addresses"] = db.publicAccounts
 	err := codec.NewEncoderBytes(&data, jsonHandler).Encode(jsonStruct)
 	if err != nil {
-		glog.Fatalf("could not marshal addresses for request %s", err)
+		log.Fatalf("could not marshal addresses for request %s", err)
 	}
 	return bytes.NewBuffer(data)
 }
 
 func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer close(monkeySendChan)
 	getStatsURL := "https://monkey.banano.cc/api/v1/monkey/dtl"
 	var totalCount uint64
 	var survivorCount uint64
@@ -176,7 +175,7 @@ main:
 		// Exit early there are web errors and then the app shutsdown
 		select {
 		case <-ctx.Done():
-			glog.Infof("Stopping a monKey raid.")
+			log.Infof("Stopping a monKey raid.")
 			return
 		default:
 		}
@@ -187,20 +186,20 @@ main:
 
 		request, err := http.NewRequest("POST", getStatsURL, jsonReader)
 		if err != nil {
-			glog.Errorf("Could not get monkey stats %s", err)
+			log.Errorf("Could not get monkey stats %s", err)
 			continue
 		}
 		request.Header.Set("Content-Type", "application/json")
 		response, err := httpClient.Do(request)
 		if err != nil {
-			glog.Errorf("Could not get monkey stats %s", err)
+			log.Errorf("Could not get monkey stats %s", err)
 			continue
 		} else {
 			defer response.Body.Close()
 		}
 
 		if response.StatusCode != 200 {
-			glog.Warningf("Non 200 error returned (%d %s) sleeping 10 seconds cause server is probably loaded", response.StatusCode, response.Status)
+			log.Warningf("Non 200 error returned (%d %s) sleeping 10 seconds cause server is probably loaded", response.StatusCode, response.Status)
 			time.Sleep(time.Second * 10)
 			continue
 		}
@@ -208,7 +207,7 @@ main:
 		results := make(map[string]MonkeyStats)
 		err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
 		if err != nil {
-			glog.Warningf("could not unmarshal response: %s sleeping for a bit to not flood", err)
+			log.Warningf("could not unmarshal response: %s sleeping for a bit to not flood", err)
 			time.Sleep(time.Second * 10)
 			continue
 		}
@@ -223,18 +222,18 @@ main:
 		for _, monkey := range monKeys {
 			select {
 			case <-ctx.Done():
-				glog.Infof("Stopping a monKey raid.")
+				log.Infof("Stopping a monKey raid.")
 				break main
 			default:
 				totalCount++
-				if strings.HasPrefix(monkey.Misc, "flamethrower") && strings.HasPrefix(monkey.Mouth, "joint") && strings.HasPrefix(monkey.Glasses, "mono") {
+				if strings.HasPrefix(monkey.Misc, "flamethrower") {
 					survivorCount++
 					monkeySendChan <- monkey
 				}
 			}
 		}
 	}
-	glog.Infof("This banano republic raided with a total of %d monkeys and %d survivor monKeys!", totalCount, survivorCount)
+	log.Infof("This banano republic raided with a total of %d monkeys and %d survivor monKeys!", totalCount, survivorCount)
 }
 
 func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
@@ -262,13 +261,13 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 			return svg, nil
 		}
 	default:
-		glog.Fatalf("cannot convert to format %s.", targetFormat)
+		log.Fatalf("cannot convert to format %s.", targetFormat)
 	}
 
 	for monkey := range monkeyDataChan {
 		select {
 		case <-ctx.Done():
-			glog.Infof("Stopping some monKey's looting.")
+			log.Infof("Stopping some monKey's looting.")
 			return
 		default:
 		}
@@ -281,23 +280,23 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 
 		jsonData, err := json.MarshalIndent(monkey, "", "  ")
 		if err != nil {
-			glog.Fatalf("couldn't marshal monKey %s", monkey.SillyName)
+			log.Fatalf("couldn't marshal monKey %s", monkey.SillyName)
 		}
 		err = ioutil.WriteFile(targetJson, jsonData, 0600)
 		if err != nil {
-			glog.Fatalf("could now write monkey, sad %s: %s", monkey.SillyName, err)
+			log.Fatalf("could now write monkey, sad %s: %s", monkey.SillyName, err)
 		}
 		monkeyConverted, err := convert(monkeySVG)
 		if err != nil {
-			glog.Fatalf("could not convert monkey image, sad monkey %s: %s", monkey.SillyName, err)
+			log.Fatalf("could not convert monkey image, sad monkey %s: %s", monkey.SillyName, err)
 		}
 		monkeyData, err := io.ReadAll(monkeyConverted)
 		if err != nil {
-			glog.Fatalf("could not write monkey image, sad monkey %s: %s", monkey.SillyName, err)
+			log.Fatalf("could not write monkey image, sad monkey %s: %s", monkey.SillyName, err)
 		}
 		err = ioutil.WriteFile(targetImgFile, monkeyData, 0600)
 		if err != nil {
-			glog.Fatalf("could now write monkey, sad monkey %s: %s", monkey.SillyName, err)
+			log.Fatalf("could now write monkey, sad monkey %s: %s", monkey.SillyName, err)
 		}
 
 	}
@@ -310,7 +309,7 @@ func displayMonkey(ctx context.Context, monkeyDataChan <-chan MonkeyStats, wg *s
 	for monkey := range monkeyDataChan {
 		select {
 		case <-ctx.Done():
-			glog.Infof("Stopping the monKey to the moon.")
+			log.Infof("Stopping the monKey to the moon.")
 			return
 		default:
 		}
@@ -378,11 +377,11 @@ func grabMonkey(publicAddr bananoutils.Account) io.Reader {
 
 	response, err := httpClient.Do(request)
 	if err != nil {
-		glog.Fatalf("could not get monkey %v", err)
+		log.Fatalf("could not get monkey %v", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		glog.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
+		log.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
 	}
 	defer response.Body.Close()
 	copy := new(bytes.Buffer)
@@ -404,7 +403,7 @@ func setupHttp() {
 
 func main() {
 
-	glog.Infof("Using %d cpus", runtime.GOMAXPROCS(-1))
+	log.Infof("Using %d cpus", runtime.GOMAXPROCS(-1))
 	setupHttp()
 	setupFlags()
 	parseFlags()
@@ -412,19 +411,19 @@ func main() {
 	defer image.Destroy()
 	curdir, err := os.Getwd()
 	if err != nil {
-		glog.Fatal("Can't get current directory.")
+		log.Fatal("Can't get current directory.")
 	}
 	targetDir := path.Join(curdir, "foundMonKeys")
 	err = os.MkdirAll(targetDir, 0700)
 	if err != nil {
-		glog.Fatalf("could not create directory %s", err)
+		log.Fatalf("could not create directory %s", err)
 	}
 	stat, err := os.Stat(targetDir)
 	if err != nil {
-		glog.Fatalf("could not verify permissions for %s: %s", targetDir, err)
+		log.Fatalf("could not verify permissions for %s: %s", targetDir, err)
 	}
 	if stat.Mode().Perm() != 0700 {
-		glog.Fatalf("will not run because %s is not set to 0700 permissions, you don't want anyone reading your keys do you?", targetDir)
+		log.Fatalf("will not run because %s is not set to 0700 permissions, you don't want anyone reading your keys do you?", targetDir)
 	}
 
 	ctx := context.Background()
@@ -434,15 +433,15 @@ func main() {
 	defer close(finishedChan)
 	go func(done chan<- struct{}) {
 		monkeyNameChan := make(chan string, 100)
-		defer close(monkeyNameChan)
 		monkeyDataChan := make(chan MonkeyStats, 1000)
-		defer close(monkeyDataChan)
 
 		wg := new(sync.WaitGroup)
+		wgProcessing := new(sync.WaitGroup)
 		for i := uint(0); i < *config.max_requests; i++ {
 			wg.Add(1)
 			go generateFlamingMonkeys(deadlineCtx, *config.batch_size, monkeyDataChan, wg)
-			go processMonkeyData(ctx, !*config.disablePreview, targetDir, string(config.format), monkeyDataChan, monkeyNameChan, wg)
+			wgProcessing.Add(1)
+			go processMonkeyData(ctx, !*config.disablePreview, targetDir, string(config.format), monkeyDataChan, monkeyNameChan, wgProcessing)
 
 		}
 		var monkeyHeadCount uint64
@@ -450,28 +449,31 @@ func main() {
 		for {
 			select {
 			case <-deadlineCtx.Done():
-				glog.Info("Failing Monkeygedon")
+				log.Info("Failing Monkeygedon")
 				break main
 			case monkeyName, ok := <-monkeyNameChan:
 				if !ok {
 					break main
 				}
 				monkeyHeadCount++
-				glog.Infof("Say hi to %s", monkeyName)
+				log.Infof("Say hi to %s", monkeyName)
 			}
 		}
-		glog.Infof("Total monKeys confirmed alive %d", monkeyHeadCount)
+		log.Infof("Total monKeys confirmed alive %d", monkeyHeadCount)
 		wg.Wait()
+		close(monkeyDataChan)
+		wgProcessing.Wait()
+		close(monkeyNameChan)
 		done <- struct{}{}
 	}(finishedChan)
 
 	keyEvent, _ := keyboard.GetKeys(1)
 	defer keyboard.Close()
 	if err != nil {
-		glog.Fatal("cannot read keyboard input: ", err)
+		log.Fatal("cannot read keyboard input: ", err)
 	}
 
-	glog.Info("Push ESC or Q/q to quit.")
+	log.Info("Push ESC or Q/q to quit.")
 main:
 	for {
 		select {

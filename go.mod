@@ -14,6 +14,7 @@ require (
 	github.com/golang/glog v0.0.0-20210429001901-424d2337a529
 	github.com/mattn/go-runewidth v0.0.13
 	github.com/nsf/termbox-go v1.1.1
+	github.com/sirupsen/logrus v1.8.1
 	github.com/srwiley/oksvg v0.0.0-20210519022825-9fc0c575d5fe
 	github.com/srwiley/rasterx v0.0.0-20210519020934-456a8d69b780
 	github.com/ugorji/go/codec v1.2.6

@@ -19,9 +19,9 @@ import (
 
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
-	"github.com/golang/glog"
 	"github.com/mattn/go-runewidth"
 	"github.com/nsf/termbox-go"
+	log "github.com/sirupsen/logrus"
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
 	"golang.org/x/image/font/gofont/goregular"
@@ -196,7 +196,7 @@ func DisplaySVG(imgData io.Reader, title string) {
 
 	err := termbox.Init()
 	if err != nil {
-		glog.Fatalf("could not int termbox %v", err)
+		log.Fatalf("could not int termbox %v", err)
 	}
 	defer termbox.Close()
 	termbox.SetOutputMode(termbox.Output256)
@@ -212,7 +212,7 @@ func addLabel(img image.Image, x, y int, size float64, label string) image.Image
 	col := image.NewUniform(white)
 	ttF, err := truetype.Parse(goregular.TTF)
 	if err != nil {
-		glog.Fatal("couldn't load fonts.")
+		log.Fatal("couldn't load fonts.")
 	}
 	ctx := freetype.NewContext()
 	pt := freetype.Pt(x, y+int(ctx.PointToFixed(size)>>6))
@@ -223,34 +223,34 @@ func addLabel(img image.Image, x, y int, size float64, label string) image.Image
 	ctx.SetClip(bounds)
 	_, err = ctx.DrawString(label, pt)
 	if err != nil {
-		glog.Fatal("could not draw title.")
+		log.Fatal("could not draw title.")
 	}
 	//	glog.Infof("%v", p)
 	return newImg
 }
 
 func DisplayImage(imgData io.Reader, title string) {
-	glog.Infoln("Close the image with <ESC> or by pressing 'q'.")
+	log.Infoln("Close the image with <ESC> or by pressing 'q'.")
 
 	data, err := io.ReadAll(imgData)
 	if err != nil {
-		glog.Errorf("could not read monkey image data to display: %")
+		log.Errorf("could not read monkey image data to display: %")
 		return
 	}
 	imagePNG, err := ConvertSvgToBinary(data, "png", 250)
 	if err != nil {
-		glog.Errorf("could not convert svg monkey image to png data to display: %s", err)
+		log.Errorf("could not convert svg monkey image to png data to display: %s", err)
 		return
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(imagePNG))
 	if err != nil {
-		glog.Errorf("could not decode image data to display: %s", err)
+		log.Errorf("could not decode image data to display: %s", err)
 		return
 	}
 	err = termbox.Init()
 	if err != nil {
-		glog.Fatalf("could not int termbox %v", err)
+		log.Fatalf("could not int termbox %v", err)
 	}
 	defer termbox.Close()
 	termbox.SetOutputMode(termbox.Output256)

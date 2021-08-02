@@ -18,7 +18,7 @@ import (
 
 	"github.com/Pallinder/go-randomdata"
 	"github.com/bbedward/nano/address"
-	"github.com/eiannone/keyboard"
+	termbox "github.com/gdamore/tcell/v2"
 	log "github.com/sirupsen/logrus"
 	"github.com/steampoweredtaco/legion-van/bananoutils"
 	"github.com/steampoweredtaco/legion-van/image"
@@ -56,6 +56,7 @@ var config struct {
 	disablePreview *bool
 	format         targetFormat
 	batch_size     *uint
+	debug          *bool
 }
 
 type targetFormat string
@@ -63,6 +64,7 @@ type targetFormat string
 func setupFlags() {
 	config.format = "svg"
 
+	config.debug = flag.Bool("debug", false, "changes logging and makes terminal virtual for debugging issues.")
 	config.interval = flag.Duration("interval", time.Minute, "Frequency to update represenitative data.")
 	config.max_requests = flag.Uint("max_requests", 4, "Maxiumum outstanding requests to spyglass.")
 	config.disablePreview = flag.Bool("disable_preview", false, "Disable preview of found monkey in terminal, when enabled press any key to continue with next preview.")
@@ -301,43 +303,34 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 
 	}
 }
-func displayMonkey(ctx context.Context, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
+func displayMonkey(ctx context.Context, screen termbox.Screen, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
 	if monkeyDataChan == nil {
 		return
 	}
-	for monkey := range monkeyDataChan {
+	for {
 		select {
+		case monkey := <-monkeyDataChan:
+			monkeyPNG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
+			displayCtx, cancel := context.WithTimeout(ctx, time.Second*1)
+			image.DisplayImage(displayCtx, screen, monkeyPNG, monkey.PublicAddress+"\n"+monkey.PrivateKey)
+			cancel()
 		case <-ctx.Done():
 			log.Infof("Stopping the monKey to the moon.")
 			return
-		default:
 		}
-		monkeyPNG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
-		image.DisplayImage(monkeyPNG, monkey.PublicAddress+"\n"+monkey.PrivateKey)
 	}
 
 }
 
-func processMonkeyData(ctx context.Context, shouldDisplayMonkey bool, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, monkeyNameChan chan<- string, wg *sync.WaitGroup) {
+func processMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, monkeyNameChan chan<- string, monkeyDisplayChan chan<- MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
 	writeMonkeyChan := make(chan MonkeyStats, 100)
 	defer close(writeMonkeyChan)
 
-	var displayMonkeyChan chan MonkeyStats = nil
-	if shouldDisplayMonkey {
-		displayMonkeyChan = make(chan MonkeyStats, 100)
-		defer close(displayMonkeyChan)
-	}
-
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go writeMonkeyData(ctx, targetDir, targetFormat, writeMonkeyChan, wg)
-	}
-
-	if displayMonkeyChan != nil {
-		wg.Add(1)
-		go displayMonkey(ctx, displayMonkeyChan, wg)
 	}
 
 main:
@@ -351,10 +344,16 @@ main:
 			}
 			monkeyNameChan <- monkey.SillyName
 			writeMonkeyChan <- monkey
-			if shouldDisplayMonkey {
-				if displayMonkeyChan != nil {
-					displayMonkeyChan <- monkey
-				}
+			if monkeyDisplayChan != nil {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					select {
+					case monkeyDisplayChan <- monkey:
+					case <-ctx.Done():
+						return
+					}
+				}()
 			}
 
 		}
@@ -401,12 +400,27 @@ func setupHttp() {
 	}
 }
 
-func main() {
+func setupLog(writer io.Writer) {
+	stdOutWriter := os.Stderr
 
-	log.Infof("Using %d cpus", runtime.GOMAXPROCS(-1))
-	setupHttp()
+	if *config.debug {
+		writer = io.MultiWriter(writer, stdOutWriter)
+		log.SetReportCaller(true)
+	}
+	log.SetOutput(writer)
+}
+func main() {
 	setupFlags()
 	parseFlags()
+	logFile, err := os.OpenFile("legion-van.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		log.Fatal("could not open log file: %s", err)
+		os.Exit(-1)
+	}
+	defer logFile.Close()
+	setupLog(logFile)
+	setupHttp()
+	log.Infof("Using %d cpus", runtime.GOMAXPROCS(-1))
 	image.Init()
 	defer image.Destroy()
 	curdir, err := os.Getwd()
@@ -427,28 +441,49 @@ func main() {
 	}
 
 	ctx := context.Background()
-	//cancelCtx := context.WithCancel(ctx)
-	deadlineCtx, cancel := context.WithTimeout(ctx, *config.interval)
+	ctx, cancel := context.WithTimeout(ctx, *config.interval)
 	finishedChan := make(chan struct{})
 	defer close(finishedChan)
+	var screen termbox.Screen
+	if !*config.debug {
+		screen, err = termbox.NewScreen()
+	} else {
+		screen = termbox.NewSimulationScreen("")
+		err = nil
+	}
+	if err != nil {
+
+		log.Errorf("cannot display image, can't create screen trying a virtual screen instead %s", err)
+		// try fallback to virtual for debuging
+		screen = termbox.NewSimulationScreen("")
+	}
+	err = screen.Init()
+	defer screen.Fini()
+	screen.SetStyle(termbox.StyleDefault.
+		Foreground(termbox.ColorWhiteSmoke).
+		Background(termbox.ColorBlack))
+	if err != nil {
+		log.Fatalf("cannot display image, can't create screen %s", err)
+	}
 	go func(done chan<- struct{}) {
 		monkeyNameChan := make(chan string, 100)
 		monkeyDataChan := make(chan MonkeyStats, 1000)
-
+		monkeyDisplayChan := make(chan MonkeyStats, 10)
 		wg := new(sync.WaitGroup)
 		wgProcessing := new(sync.WaitGroup)
 		for i := uint(0); i < *config.max_requests; i++ {
 			wg.Add(1)
-			go generateFlamingMonkeys(deadlineCtx, *config.batch_size, monkeyDataChan, wg)
+			go generateFlamingMonkeys(ctx, *config.batch_size, monkeyDataChan, wg)
 			wgProcessing.Add(1)
-			go processMonkeyData(ctx, !*config.disablePreview, targetDir, string(config.format), monkeyDataChan, monkeyNameChan, wgProcessing)
-
+			go processMonkeyData(ctx, targetDir, string(config.format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProcessing)
 		}
+		wgProcessing.Add(1)
+		go displayMonkey(ctx, screen, monkeyDisplayChan, wgProcessing)
 		var monkeyHeadCount uint64
 	main:
 		for {
 			select {
-			case <-deadlineCtx.Done():
+			case <-ctx.Done():
 				log.Info("Failing Monkeygedon")
 				break main
 			case monkeyName, ok := <-monkeyNameChan:
@@ -460,6 +495,7 @@ func main() {
 			}
 		}
 		log.Infof("Total monKeys confirmed alive %d", monkeyHeadCount)
+		log.Info("Waiting for pending writes and network queries to close...there may be more survivors on the lifeboat")
 		wg.Wait()
 		close(monkeyDataChan)
 		wgProcessing.Wait()
@@ -467,26 +503,27 @@ func main() {
 		done <- struct{}{}
 	}(finishedChan)
 
-	keyEvent, _ := keyboard.GetKeys(1)
-	defer keyboard.Close()
-	if err != nil {
-		log.Fatal("cannot read keyboard input: ", err)
-	}
+	image.DrawTextBottom(screen, "Push ESC or Q/q to quit.")
+	eventChan := make(chan termbox.Event, 1)
+	go screen.ChannelEvents(eventChan, ctx.Done())
 
-	log.Info("Push ESC or Q/q to quit.")
 main:
 	for {
-		select {
 
-		case key := <-keyEvent:
-			if key.Key != keyboard.KeyEsc && key.Rune != 'q' && key.Rune != 'Q' {
-				continue
-			}
-			cancel()
-			<-finishedChan
-			break main
+		select {
 		case <-finishedChan:
 			break main
+		case event := <-eventChan:
+			switch ev := event.(type) {
+			case *termbox.EventResize:
+				log.Info("Resized")
+				screen.Sync()
+			case *termbox.EventKey:
+				log.Infof("key pressed %c, exiting...", ev.Rune())
+				cancel()
+				<-finishedChan
+			}
+
 		}
 	}
 }

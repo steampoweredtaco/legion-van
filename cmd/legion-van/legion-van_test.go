@@ -19,7 +19,7 @@ func TestStack(t *testing.T) {
 
 		monkeyNameChan := make(chan string, 100)
 		for i := uint(0); i < 10; i++ {
-			go generateFlamingMonkeys(deadlineCtx, false /*disable preview*/, 10000, targetDir, "png", monkeyNameChan)
+			go generateFlamingMonkeys(deadlineCtx, 10000, targetDir, "png", monkeyNameChan)
 		}
 		var monkeyHeadCount uint64
 	main:

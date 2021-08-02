@@ -14,7 +14,7 @@ import (
 	// We've forked golang's ed25519 implementation
 	// to use blake2b instead of sha3
 	"github.com/bbedward/crypto/ed25519"
-	"github.com/golang/glog"
+	log "github.com/sirupsen/logrus"
 )
 
 // nano uses a non-standard base32 character set.
@@ -146,7 +146,7 @@ func GeneratePrivateKeyAndFirstPublicAddress() (string, Account, error) {
 	key := make([]byte, 32)
 	_, err := rand.Read(key)
 	if err != nil {
-		glog.Fatal("Could not get a crypto random value.")
+		log.Fatal("Could not get a crypto random value.")
 		return "", "", err
 	}
 

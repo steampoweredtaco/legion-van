@@ -2,13 +2,13 @@ package image
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"io"
 	"os"
 	"strings"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"image/color"
@@ -17,18 +17,16 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
+	"github.com/disintegration/imaging"
+	termbox "github.com/gdamore/tcell/v2"
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
-	"github.com/mattn/go-runewidth"
-	"github.com/nsf/termbox-go"
 	log "github.com/sirupsen/logrus"
-	"github.com/srwiley/oksvg"
-	"github.com/srwiley/rasterx"
 	"golang.org/x/image/font/gofont/goregular"
 	"gopkg.in/gographics/imagick.v3/imagick"
 )
 
-const defaultRatio float64 = 7.0 / 3.0 // The terminal's default cursor width/height ratio
+const defaultRatio float64 = 3.0 / 7.0 // The terminal's default cursor width/height ratio
 
 func rgb(c color.Color) (uint16, uint16, uint16) {
 	r, g, b, _ := c.RGBA()
@@ -56,19 +54,26 @@ func load(filename string) (image.Image, error) {
 	return img, err
 }
 
-// canvasSize returns the terminal columns, rows, and cursor aspect ratio
-func canvasSize() (int, int, float64) {
+func getTermCharPixelWxH(screen termbox.Screen) (width, height int) {
 	var size [4]uint16
 	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(os.Stdout.Fd()), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&size)), 0, 0, 0); err != 0 {
-		panic(err)
+		log.Warn("Couldn't get term info for canvas size so making stuff up.")
+		size[2] = 80
+		size[3] = 25
 	}
-	rows, cols, width, height := size[0], size[1], size[2], size[3]
-	var whratio = defaultRatio
+	width, height = int(size[2]), int(size[3])
 	if width > 0 && height > 0 {
-		whratio = float64(height/rows) / float64(width/cols)
+		log.Info("Got from term")
+		return
 	}
-
-	return int(cols), int(rows), whratio
+	widthScreen, heightScreen := screen.Size()
+	log.Info("Got from screen")
+	// w/h = defaultRatio
+	// w = h * defaultRatio
+	// h = w/defaultRatio
+	width = widthScreen * 3
+	height = heightScreen * 7
+	return
 }
 
 // scales calculates the image scale to fit within the terminal width/height
@@ -79,29 +84,32 @@ func scale(imgW, imgH, termW, termH int, whratio float64) float64 {
 }
 
 // imgArea calcuates the approximate rectangle a terminal cell takes up
-func imgArea(termX, termY int, imgScale, whratio float64) (int, int, int, int) {
-	startX, startY := float64(termX)*imgScale, float64(termY)*imgScale*whratio
-	endX, endY := startX+imgScale, startY+imgScale*whratio
+func imgArea(termX, termY int, pixelsPerConsoleX, pixelsPerConsoleY float64) (int, int, int, int) {
+	startX, startY := float64(termX)*pixelsPerConsoleX, float64(termY)*pixelsPerConsoleY
+	endX, endY := startX+pixelsPerConsoleX, startY+pixelsPerConsoleY
 
 	return int(startX), int(startY), int(endX), int(endY)
 }
 
 // avgRGB calculates the average RGB color within the given
 // rectangle, and returns the [0,1] range of each component.
-func avgRGB(img image.Image, startX, startY, endX, endY int) (uint16, uint16, uint16) {
-	var total = [3]uint16{}
-	var count uint16
+func avgRGB(img image.Image, startX, startY, endX, endY int) (int32, int32, int32) {
+	var total = [3]int32{}
+	var count int32
 	for x := startX; x < endX; x++ {
 		for y := startY; y < endY; y++ {
 			if (!image.Point{x, y}.In(img.Bounds())) {
 				continue
 			}
 			r, g, b := rgb(img.At(x, y))
-			total[0] += r
-			total[1] += g
-			total[2] += b
+			total[0] += int32(r)
+			total[1] += int32(g)
+			total[2] += int32(b)
 			count++
 		}
+	}
+	if count == 0 {
+		return 0, 0, 0
 	}
 
 	r := total[0] / count
@@ -121,88 +129,88 @@ func max(values ...float64) float64 {
 	return m
 }
 
-func tbprint(x, y int, fg, bg termbox.Attribute, msg string) {
-	originalX := x
-	for _, c := range msg {
-		if c == '\n' {
-			x = originalX
-			y++
-			continue
+func DrawText(s termbox.Screen, x, y int, text string) {
+	x2, y2 := s.Size()
+	drawText(s, x, y, x2, y2, termbox.StyleDefault, text)
+	s.Show()
+}
+
+func DrawTextBottom(s termbox.Screen, text string) {
+	_, y := s.Size()
+	DrawText(s, 0, y-1, text)
+}
+func drawText(s termbox.Screen, x1, y1, x2, y2 int, style termbox.Style, text string) {
+	row := y1
+	col := x1
+	for _, r := range text {
+		s.SetContent(col, row, r, nil, style)
+		col++
+		if col >= x2 {
+			row++
+			col = x1
 		}
-		termbox.SetCell(x, y, c, fg, bg)
-		x += runewidth.RuneWidth(c)
+		if row > y2 {
+			break
+		}
 	}
 }
 
-func drawImgToTerminal(img image.Image, title string) {
-	// Get terminal size and cursor width/height ratio
-	width, height, whratio := canvasSize()
+func drawImgToTerminal(screen termbox.Screen, img image.Image, title string) {
 	// Subtract one for another line to write to
+	termWidth, termHeight := screen.Size()
+	termPixWidth, termPixelHeight := getTermCharPixelWxH(screen)
+	termPixelRatio := float64(termPixWidth) / float64(termPixelHeight)
+	//termRatio := float64(termWidth) / float64(termHeight)
 	bounds := img.Bounds()
 	imgW, imgH := bounds.Dx(), bounds.Dy()
+	imgRatio := float64(imgW) / float64(imgH)
 
-	imgScale := scale(imgW, imgH, width, height, whratio)
+	// resizedImg := imaging.Fill(img, termPixelHeight, termPixWidth, imaging.Center, imaging.Lanczos)
+	resizedImg := imaging.Fit(img, termPixelHeight, termPixWidth, imaging.Lanczos)
 
-	// Resize canvas to fit scaled image
-	width, height = int(float64(imgW)/imgScale), int(float64(imgH)/(imgScale*whratio))
+	bounds = resizedImg.Bounds()
+	imgW, imgH = bounds.Dx(), bounds.Dy()
+	imgRatio = float64(imgW) / float64(imgH)
 
-	termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
-	white := termbox.ColorWhite
-	black := termbox.ColorBlack
+	pixelsPerConsoleX := float64(imgW) / float64(termWidth)
+	pixelsPerConsoleY := float64(imgH) / float64(termHeight)
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	screen.Clear()
+	maxX, maxY := screen.Size()
+	for y := 0; y < termHeight; y++ {
+		for x := 0; x < termWidth; x++ {
 			// Calculate average color for the corresponding image rectangle
 			// fitting in this cell. We use a half-block trick, wherein the
 			// lower half of the cell displays the character ▄, effectively
 			// doubling the resolution of the canvas.
-			startX, startY, endX, endY := imgArea(x, y, imgScale, whratio)
+			startX, startY, endX, endY := imgArea(x, y, pixelsPerConsoleX, pixelsPerConsoleY)
 
-			r, g, b := avgRGB(img, startX, startY, endX, (startY+endY)/2)
-			colorUp := termbox.Attribute(termColor(r, g, b))
-
-			r, g, b = avgRGB(img, startX, (startY+endY)/2, endX, endY)
-			colorDown := termbox.Attribute(termColor(r, g, b))
-
-			termbox.SetCell(x, y, '▄', colorDown, colorUp)
+			r, g, b := avgRGB(resizedImg, startX, startY, endX, (startY+endY)/2)
+			r2, g2, b2 := avgRGB(resizedImg, startX, (startY+endY)/2, endX, endY)
+			style := termbox.StyleDefault.
+				Background(termbox.NewRGBColor(r, g, b)).
+				Foreground(termbox.NewRGBColor(r2, g2, b2))
+			screen.SetContent(x, y, '▄', nil, style)
 		}
 	}
-	tbprint(0, 0, white, black, title)
-	termbox.Flush()
+	drawText(screen, 0, 0, maxX, maxY, termbox.StyleDefault, title)
+	drawText(screen, 0, 1, maxX, maxY, termbox.StyleDefault, fmt.Sprintf("%dx%d %dx%d %f %f %dx%d", maxX, maxY, termWidth, termHeight, termPixelRatio, imgRatio, termPixWidth, termPixelHeight))
+	screen.Show()
 }
 
-func display(img image.Image, title string) error {
-	drawImgToTerminal(img, title)
+func display(ctx context.Context, screen termbox.Screen, img image.Image, title string) error {
+
+	drawImgToTerminal(screen, img, title)
 
 	for {
-		switch ev := termbox.PollEvent(); ev.Type {
-		case termbox.EventKey:
+
+		select {
+		case <-ctx.Done():
 			return nil
-		case termbox.EventResize:
-			drawImgToTerminal(img, title)
-		default:
-			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
 
-func DisplaySVG(imgData io.Reader, title string) {
-	w, h := 512, 512
-
-	icon, _ := oksvg.ReadIconStream(imgData)
-	icon.SetTarget(0, 0, float64(w), float64(h))
-	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
-	icon.Draw(rasterx.NewDasher(w, h, rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())), 1)
-
-	err := termbox.Init()
-	if err != nil {
-		log.Fatalf("could not int termbox %v", err)
-	}
-	defer termbox.Close()
-	termbox.SetOutputMode(termbox.Output256)
-
-	display(rgba, title)
-}
 func addLabel(img image.Image, x, y int, size float64, label string) image.Image {
 	bounds := img.Bounds()
 	newImg := image.NewRGBA(bounds)
@@ -229,8 +237,7 @@ func addLabel(img image.Image, x, y int, size float64, label string) image.Image
 	return newImg
 }
 
-func DisplayImage(imgData io.Reader, title string) {
-	log.Infoln("Close the image with <ESC> or by pressing 'q'.")
+func DisplayImage(ctx context.Context, screen termbox.Screen, imgData io.Reader, title string) {
 
 	data, err := io.ReadAll(imgData)
 	if err != nil {
@@ -248,14 +255,7 @@ func DisplayImage(imgData io.Reader, title string) {
 		log.Errorf("could not decode image data to display: %s", err)
 		return
 	}
-	err = termbox.Init()
-	if err != nil {
-		log.Fatalf("could not int termbox %v", err)
-	}
-	defer termbox.Close()
-	termbox.SetOutputMode(termbox.Output256)
-	//panic("doh")
-	display(img, title)
+	display(ctx, screen, img, title)
 }
 
 type ImageFormat string

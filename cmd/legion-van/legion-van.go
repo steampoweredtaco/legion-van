@@ -366,7 +366,7 @@ func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyC
 	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, wg)
 }
 
-func grabMonkey(publicAddr bananoutils.Account) io.Reader {
+func GrabMonkey(publicAddr bananoutils.Account) io.Reader {
 
 	var addressBuilder strings.Builder
 	addressBuilder.WriteString("https://monkey.banano.cc/api/v1/monkey/")

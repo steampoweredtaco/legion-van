@@ -58,8 +58,6 @@ func getTermCharPixelWxH(screen termbox.Screen) (width, height int) {
 	var size [4]uint16
 	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(os.Stdout.Fd()), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&size)), 0, 0, 0); err != 0 {
 		log.Warn("Couldn't get term info for canvas size so making stuff up.")
-		size[2] = 80
-		size[3] = 25
 	}
 	width, height = int(size[2]), int(size[3])
 	if width > 0 && height > 0 {
@@ -155,28 +153,25 @@ func drawText(s termbox.Screen, x1, y1, x2, y2 int, style termbox.Style, text st
 	}
 }
 
-func drawImgToTerminal(screen termbox.Screen, img image.Image, title string) {
+func DrawImgToScreen(screen termbox.Screen, img image.Image) {
 	// Subtract one for another line to write to
 	termWidth, termHeight := screen.Size()
 	termPixWidth, termPixelHeight := getTermCharPixelWxH(screen)
-	termPixelRatio := float64(termPixWidth) / float64(termPixelHeight)
+	//termPixelRatio := float64(termPixWidth) / float64(termPixelHeight)
 	//termRatio := float64(termWidth) / float64(termHeight)
 	bounds := img.Bounds()
-	imgW, imgH := bounds.Dx(), bounds.Dy()
-	imgRatio := float64(imgW) / float64(imgH)
 
 	// resizedImg := imaging.Fill(img, termPixelHeight, termPixWidth, imaging.Center, imaging.Lanczos)
 	resizedImg := imaging.Fit(img, termPixelHeight, termPixWidth, imaging.Lanczos)
 
 	bounds = resizedImg.Bounds()
-	imgW, imgH = bounds.Dx(), bounds.Dy()
-	imgRatio = float64(imgW) / float64(imgH)
+	imgW, imgH := bounds.Dx(), bounds.Dy()
+	//imgRatio := float64(imgW) / float64(imgH)
 
 	pixelsPerConsoleX := float64(imgW) / float64(termWidth)
 	pixelsPerConsoleY := float64(imgH) / float64(termHeight)
 
 	screen.Clear()
-	maxX, maxY := screen.Size()
 	for y := 0; y < termHeight; y++ {
 		for x := 0; x < termWidth; x++ {
 			// Calculate average color for the corresponding image rectangle
@@ -193,14 +188,12 @@ func drawImgToTerminal(screen termbox.Screen, img image.Image, title string) {
 			screen.SetContent(x, y, '▄', nil, style)
 		}
 	}
-	drawText(screen, 0, 0, maxX, maxY, termbox.StyleDefault, title)
-	drawText(screen, 0, 1, maxX, maxY, termbox.StyleDefault, fmt.Sprintf("%dx%d %dx%d %f %f %dx%d", maxX, maxY, termWidth, termHeight, termPixelRatio, imgRatio, termPixWidth, termPixelHeight))
-	screen.Show()
+	// Show is expected to be done by caller
 }
 
-func display(ctx context.Context, screen termbox.Screen, img image.Image, title string) error {
+func display(ctx context.Context, screen termbox.Screen, img image.Image) error {
 
-	drawImgToTerminal(screen, img, title)
+	DrawImgToScreen(screen, img)
 
 	for {
 
@@ -255,7 +248,7 @@ func DisplayImage(ctx context.Context, screen termbox.Screen, imgData io.Reader,
 		log.Errorf("could not decode image data to display: %s", err)
 		return
 	}
-	display(ctx, screen, img, title)
+	display(ctx, screen, img)
 }
 
 type ImageFormat string

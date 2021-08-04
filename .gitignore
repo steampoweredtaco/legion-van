@@ -333,5 +333,7 @@ ASALocalRun/
 
 out
 debug
-foundMonKeys
+foundMonKeys*
 logs
+__debug_bin
+*.out

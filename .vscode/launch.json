@@ -17,5 +17,15 @@
             "args": ["-format", "png"],
             "console": "internalConsole"
         }
+
+        {
+            "name": "Launch Legion-Gui",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/gui/gui.go",
+            "args": ["-debug"],
+            "console": "externalTerminal"
+        }
     ]
 }

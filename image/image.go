@@ -7,7 +7,6 @@ import (
 	"image"
 	"io"
 	"os"
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -237,7 +236,7 @@ func DisplayImage(ctx context.Context, screen termbox.Screen, imgData io.Reader,
 		log.Errorf("could not read monkey image data to display: %")
 		return
 	}
-	imagePNG, err := ConvertSvgToBinary(data, "png", 250)
+	imagePNG, err := ConvertSvgToBinary(data, PNGFormat, 250)
 	if err != nil {
 		log.Errorf("could not convert svg monkey image to png data to display: %s", err)
 		return
@@ -250,8 +249,6 @@ func DisplayImage(ctx context.Context, screen termbox.Screen, imgData io.Reader,
 	}
 	display(ctx, screen, img)
 }
-
-type ImageFormat string
 
 const DefaultSize = 4000
 
@@ -280,7 +277,7 @@ func ConvertSvgToBinary(svgData []byte, format ImageFormat, size uint) ([]byte, 
 	}
 	mw.SetImageCompression(imagick.COMPRESSION_NO)
 	mw.SetImageCompressionQuality(100)
-	mw.SetImageFormat(strings.ToUpper(string(format)))
+	mw.SetImageFormat(format.fmtUpper)
 	mw.ResetIterator()
 	return mw.GetImageBlob(), nil
 }

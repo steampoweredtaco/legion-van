@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,10 +20,11 @@ import (
 
 	"github.com/Pallinder/go-randomdata"
 	"github.com/bbedward/nano/address"
-	termbox "github.com/gdamore/tcell/v2"
+	"github.com/gdamore/tcell/v2"
 	log "github.com/sirupsen/logrus"
 	"github.com/steampoweredtaco/legion-van/bananoutils"
-	"github.com/steampoweredtaco/legion-van/image"
+	"github.com/steampoweredtaco/legion-van/gui"
+	legionImage "github.com/steampoweredtaco/legion-van/image"
 	"github.com/ugorji/go/codec"
 )
 
@@ -251,7 +254,7 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 			if err != nil {
 				return nil, err
 			}
-			data, err := image.ConvertSvgToBinary(dataBytes, image.ImageFormat(format), 1000)
+			data, err := legionImage.ConvertSvgToBinary(dataBytes, legionImage.PNGFormat, 1000)
 			if err != nil {
 				return nil, err
 			}
@@ -274,7 +277,12 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 		default:
 		}
 
-		monkeySVG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
+		monkeySVG, err := bananoutils.GrabMonkey(bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
+		if err != nil {
+			log.Warn("lost a monkey %s", err)
+			continue
+		}
+
 		targetName := monkey.SillyName + "_" + monkey.PublicAddress
 		targetJson := path.Join(targetDir, targetName) + ".json"
 
@@ -303,7 +311,7 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 
 	}
 }
-func displayMonkey(ctx context.Context, screen termbox.Screen, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
+func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
 	if monkeyDataChan == nil {
 		return
@@ -311,12 +319,32 @@ func displayMonkey(ctx context.Context, screen termbox.Screen, monkeyDataChan <-
 	for {
 		select {
 		case monkey := <-monkeyDataChan:
-			monkeyPNG := grabMonkey(bananoutils.Account(monkey.PublicAddress))
-			displayCtx, cancel := context.WithTimeout(ctx, time.Second*1)
-			image.DisplayImage(displayCtx, screen, monkeyPNG, monkey.PublicAddress+"\n"+monkey.PrivateKey)
-			cancel()
+			// grab as svg as it is nicer to the server and we can convert it locally
+			monkeySVG, err := bananoutils.GrabMonkey(bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
+			if err != nil {
+				log.Warnf("could not convert monkey to preview: %s %s", monkey.SillyName, err)
+				continue
+			}
+			data, err := io.ReadAll(monkeySVG)
+			if err != nil {
+				log.Warnf("could not read data for moneky to preview: %s %s", monkey.SillyName, err)
+				continue
+			}
+
+			imagePNG, err := legionImage.ConvertSvgToBinary(data, legionImage.PNGFormat, 250)
+			if err != nil {
+				log.Warnf("could not convert svg monkey image to png data to display: %s %s", monkey.SillyName, err)
+				continue
+			}
+
+			img, _, err := image.Decode(bytes.NewReader(imagePNG))
+			if err != nil {
+				log.Warnf("could not decode image data to display for monkey: %s %s", monkey.SillyName, err)
+				continue
+			}
+			previewChan <- gui.MonkeyPreview{Image: img, Title: monkey.SillyName}
 		case <-ctx.Done():
-			log.Infof("Stopping the monKey to the moon.")
+			log.Debug("stopping the monKey preview")
 			return
 		}
 	}
@@ -400,34 +428,49 @@ func setupHttp() {
 	}
 }
 
-func setupLog(writer io.Writer) {
-	stdOutWriter := os.Stderr
+func setupLog() io.Closer {
+	var writer io.Writer
 
-	if *config.debug {
-		writer = io.MultiWriter(writer, stdOutWriter)
-		log.SetReportCaller(true)
-	}
-	log.SetOutput(writer)
-}
-func main() {
-	setupFlags()
-	parseFlags()
 	logFile, err := os.OpenFile("legion-van.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Fatal("could not open log file: %s", err)
 		os.Exit(-1)
 	}
-	defer logFile.Close()
-	setupLog(logFile)
-	setupHttp()
-	log.Infof("Using %d cpus", runtime.GOMAXPROCS(-1))
-	image.Init()
-	defer image.Destroy()
+
+	stdOutWriter := os.Stderr
+	if *config.debug {
+		writer = io.MultiWriter(logFile, stdOutWriter)
+		log.SetReportCaller(true)
+		log.SetOutput(writer)
+	} else {
+		log.SetOutput(logFile)
+	}
+	return logFile
+}
+
+func setupGui(ctx context.Context, cleanupMain context.CancelFunc) *gui.MainApp {
+	guiApp := gui.NewMainApp(ctx, cleanupMain, "legion-ban", log.StandardLogger())
+	if *config.debug {
+		simScreen := tcell.NewSimulationScreen("")
+		simScreen.SetSize(80, 25)
+		guiApp.SetTerminalScreen(simScreen)
+	}
+
+	return guiApp
+
+}
+
+// setupOutputDir creates target output dir and returns the absolute path of the target directory.
+func setupOutputDir() string {
 	curdir, err := os.Getwd()
 	if err != nil {
 		log.Fatal("Can't get current directory.")
 	}
 	targetDir := path.Join(curdir, "foundMonKeys")
+	targetDir, err = filepath.Abs(targetDir)
+	if err != nil {
+		log.Fatalf("could not resolve directory path: %s", err)
+	}
 	err = os.MkdirAll(targetDir, 0700)
 	if err != nil {
 		log.Fatalf("could not create directory %s", err)
@@ -439,32 +482,29 @@ func main() {
 	if stat.Mode().Perm() != 0700 {
 		log.Fatalf("will not run because %s is not set to 0700 permissions, you don't want anyone reading your keys do you?", targetDir)
 	}
+	return targetDir
+}
+
+func main() {
+	setupFlags()
+	parseFlags()
+	logFile := setupLog()
+	defer logFile.Close()
+	setupHttp()
+
+	log.Infof("Using %d cpus", runtime.GOMAXPROCS(-1))
+	legionImage.Init()
+	defer legionImage.Destroy()
+
+	targetDir := setupOutputDir()
 
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, *config.interval)
+	gui := setupGui(ctx, cancel)
+
 	finishedChan := make(chan struct{})
 	defer close(finishedChan)
-	var screen termbox.Screen
-	if !*config.debug {
-		screen, err = termbox.NewScreen()
-	} else {
-		screen = termbox.NewSimulationScreen("")
-		err = nil
-	}
-	if err != nil {
 
-		log.Errorf("cannot display image, can't create screen trying a virtual screen instead %s", err)
-		// try fallback to virtual for debuging
-		screen = termbox.NewSimulationScreen("")
-	}
-	err = screen.Init()
-	defer screen.Fini()
-	screen.SetStyle(termbox.StyleDefault.
-		Foreground(termbox.ColorWhiteSmoke).
-		Background(termbox.ColorBlack))
-	if err != nil {
-		log.Fatalf("cannot display image, can't create screen %s", err)
-	}
 	go func(done chan<- struct{}) {
 		monkeyNameChan := make(chan string, 100)
 		monkeyDataChan := make(chan MonkeyStats, 1000)
@@ -478,7 +518,7 @@ func main() {
 			go processMonkeyData(ctx, targetDir, string(config.format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProcessing)
 		}
 		wgProcessing.Add(1)
-		go displayMonkey(ctx, screen, monkeyDisplayChan, wgProcessing)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
 		var monkeyHeadCount uint64
 	main:
 		for {
@@ -503,27 +543,5 @@ func main() {
 		done <- struct{}{}
 	}(finishedChan)
 
-	image.DrawTextBottom(screen, "Push ESC or Q/q to quit.")
-	eventChan := make(chan termbox.Event, 1)
-	go screen.ChannelEvents(eventChan, ctx.Done())
-
-main:
-	for {
-
-		select {
-		case <-finishedChan:
-			break main
-		case event := <-eventChan:
-			switch ev := event.(type) {
-			case *termbox.EventResize:
-				log.Info("Resized")
-				screen.Sync()
-			case *termbox.EventKey:
-				log.Infof("key pressed %c, exiting...", ev.Rune())
-				cancel()
-				<-finishedChan
-			}
-
-		}
-	}
+	gui.Run()
 }

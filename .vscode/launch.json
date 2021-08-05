@@ -14,7 +14,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/legion-van/legion-van.go",
-            "args": ["-format", "png"],
+            "args": ["-format", "png", "-debug"],
             "console": "internalConsole"
         }
 

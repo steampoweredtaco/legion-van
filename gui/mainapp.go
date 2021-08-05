@@ -1,29 +1,40 @@
+/*
+gui package contains the main vanity gui interface that provides convinence and channels to windows.
+*/
 package gui
 
 import (
 	"context"
-	"fmt"
 	"image"
-
-	legion "github.com/steampoweredtaco/legion-van/image"
+	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/gdamore/tcell/v2/views"
 	"github.com/sirupsen/logrus"
 )
 
+type MonkeyPreview struct {
+	Image image.Image
+	Title string
+}
+
+type previewModel struct {
+	imageViewModel *imageModel
+	titleWidget    *views.Text
+}
+
 type MainApp struct {
-	root     MainAppRoot
-	app      views.Application
-	title    *views.Text
-	status   *views.TextBar
-	ctx      context.Context
-	quit     context.CancelFunc
-	preview1 *ImageModel
-	preview2 *ImageModel
-	preview3 *ImageModel
-	preview4 *ImageModel
-	log      *logrus.Logger
+	root        MainAppRoot
+	app         views.Application
+	title       *views.Text
+	status      *views.TextBar
+	ctx         context.Context
+	mainCancel  context.CancelFunc
+	preview     [4]*previewModel
+	previewChan chan MonkeyPreview
+	log         *logrus.Logger
+
+	previewWG *sync.WaitGroup
 }
 
 type MainAppRoot struct {
@@ -31,109 +42,30 @@ type MainAppRoot struct {
 	mainApp *MainApp
 }
 
-type ImageModel struct {
-	x           int
-	y           int
-	endx        int
-	endy        int
-	hide        bool
-	loc         string
-	enab        bool
-	screen      tcell.SimulationScreen
-	originalImg image.Image
-}
-
-func NewImageModel(img image.Image, viewWidth, viewHeight int) *ImageModel {
-	model := &ImageModel{originalImg: img}
-	model.screen = tcell.NewSimulationScreen("")
-	model.resize(viewWidth, viewHeight)
-	if img != nil {
-		legion.DrawImgToScreen(model.screen, img)
-	}
-	return model
-}
-
-func (m *ImageModel) setImage(img image.Image) {
-	m.originalImg = img
-	m.screen.Clear()
-	legion.DrawImgToScreen(m.screen, img)
-}
-
-func (m *ImageModel) resize(width, height int) {
-	m.screen.SetSize(width, height)
-}
-
-func (m *ImageModel) GetBounds() (int, int) {
-	return m.endx, m.endy
-}
-
-func (m *ImageModel) MoveCursor(offx, offy int) {
-	m.x += offx
-	m.y += offy
-	m.limitCursor()
-}
-
-func (m *ImageModel) limitCursor() {
-	if m.x < 0 {
-		m.x = 0
-	}
-	if m.x > m.endx-1 {
-		m.x = m.endx - 1
-	}
-	if m.y < 0 {
-		m.y = 0
-	}
-	if m.y > m.endy-1 {
-		m.y = m.endy - 1
-	}
-	m.loc = fmt.Sprintf("Cursor is %d,%d", m.x, m.y)
-}
-
-func (m *ImageModel) GetCursor() (int, int, bool, bool) {
-	return m.x, m.y, m.enab, !m.hide
-}
-
-func (m *ImageModel) SetCursor(x int, y int) {
-	m.x = x
-	m.y = y
-
-	m.limitCursor()
-}
-
-func (m *ImageModel) GetCell(x, y int) (rune, tcell.Style, []rune, int) {
-
-	if m.screen == nil {
-		return 0, tcell.StyleDefault, nil, 1
-	}
-	maxX, maxY := m.screen.Size()
-	if x >= maxX || y >= maxY {
-		return 0, tcell.StyleDefault, nil, 1
-	}
-
-	mainc, combc, style, width := m.screen.GetContent(x, y)
-	return mainc, style, combc, width
-}
-
-func (a *MainApp) SetPreview1(img image.Image) {
-	a.preview1.setImage(img)
-}
-func (a *MainApp) SetPreview2(img image.Image) {
-	a.preview2.setImage(img)
-}
-func (a *MainApp) SetPreview3(img image.Image) {
-	a.preview3.setImage(img)
-}
-func (a *MainApp) SetPreview4(img image.Image) {
-	a.preview4.setImage(img)
+func (a *MainApp) SetPreview(index int, img image.Image, title string) {
+	a.preview[index].imageViewModel.setImage(img)
+	a.preview[index].titleWidget.SetText(title)
 }
 
 func (a *MainApp) SetTerminalScreen(s tcell.Screen) {
 	a.app.SetScreen(s)
 }
 
-func NewMainApp(title string, log *logrus.Logger) *MainApp {
+// PNGPreviewChan is a channel png images can be piped to and they
+// will go to the appropriate preivew panes.
+func (a *MainApp) PNGPreviewChan() chan<- MonkeyPreview {
+	if a.previewChan == nil {
+		panic("gui isn't initialized")
+	}
+	return a.previewChan
+}
+
+func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, log *logrus.Logger) *MainApp {
+
 	previewStyle := tcell.StyleDefault.Foreground(tcell.ColorGhostWhite)
 	mainApp := new(MainApp)
+	mainApp.previewChan = make(chan MonkeyPreview, 4)
+
 	if log != nil {
 		mainApp.log = log
 	}
@@ -147,35 +79,20 @@ func NewMainApp(title string, log *logrus.Logger) *MainApp {
 	body.SetOrientation(views.Vertical)
 	bodyMain := views.NewBoxLayout(views.Horizontal)
 
-	previewWindow1 := views.NewCellView()
-	model := NewImageModel(nil, 30, 10)
-	mainApp.preview1 = model
-	previewWindow1.SetModel(model)
-	previewWindow1.SetStyle(previewStyle)
-
-	previewWindow2 := views.NewCellView()
-	model = NewImageModel(nil, 30, 10)
-	mainApp.preview2 = model
-	previewWindow2.SetModel(model)
-	previewWindow2.SetStyle(previewStyle)
-
-	previewWindow3 := views.NewCellView()
-	previewWindow3.SetStyle(previewStyle)
-	model = NewImageModel(nil, 30, 10)
-	mainApp.preview3 = model
-	previewWindow3.SetModel(model)
-
-	previewWindow4 := views.NewCellView()
-	previewWindow4.SetStyle(previewStyle)
-	model = NewImageModel(nil, 30, 10)
-	mainApp.preview4 = model
-	previewWindow4.SetModel(model)
-
-	bodyMain.AddWidget(previewWindow1, .25)
-	bodyMain.AddWidget(previewWindow2, .25)
-	bodyMain.AddWidget(previewWindow3, .25)
-	bodyMain.AddWidget(previewWindow4, .25)
-
+	for i := 0; i < 4; i++ {
+		previewPanel := views.NewPanel()
+		title := views.NewText()
+		title.SetAlignment(views.HAlignCenter)
+		previewPanel.SetTitle(title)
+		previewWindow := views.NewCellView()
+		model := NewImageModel(nil, 30, 10)
+		mainApp.preview[i] = &previewModel{imageViewModel: model, titleWidget: title}
+		previewPanel.Watch(model)
+		previewPanel.AddWidget(previewWindow, .25)
+		bodyMain.AddWidget(previewPanel, .25)
+		previewWindow.SetModel(model)
+		previewWindow.SetStyle(previewStyle)
+	}
 	panel.SetTitle(mainApp.title)
 	panel.SetContent(bodyMain)
 	panel.SetStatus(mainApp.status)
@@ -185,8 +102,7 @@ func NewMainApp(title string, log *logrus.Logger) *MainApp {
 	mainApp.root.SetOrientation(views.Vertical)
 
 	mainApp.app.SetRootWidget(&mainApp.root)
-	mainApp.ctx, mainApp.quit = context.WithCancel(context.Background())
-
+	mainApp.ctx, mainApp.mainCancel = ctx, mainCancel
 	return mainApp
 }
 
@@ -205,9 +121,39 @@ func (m *MainApp) Quit() {
 			m.log.Error(r)
 		}
 	}()
-	// notify all users of the gui before shutting down the going
-	m.quit()
+	// notify all users of the gui before shutting down the gui
+	m.mainCancel()
 	m.app.Quit()
+}
+
+func (m *MainApp) processPreviews() {
+	defer m.previewWG.Done()
+	nextPreviewPane := uint(0)
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			logrus.Debug("shutting down preview listener")
+			return
+		case monkeyPreview := <-m.previewChan:
+			previewModel := m.preview[nextPreviewPane%4]
+			previewModel.imageViewModel.setImage(monkeyPreview.Image)
+			previewModel.titleWidget.SetText(monkeyPreview.Title)
+			nextPreviewPane++
+			m.app.Update()
+		}
+	}
+}
+
+func (m *MainApp) listenForPreviews() {
+	m.previewWG = new(sync.WaitGroup)
+	// TODO make the number of preview panes configurable.
+	m.previewWG.Add(4)
+	go m.processPreviews()
+}
+
+func (m *MainApp) cleanupGui() {
+	m.previewWG.Wait()
 }
 
 func (m *MainApp) Run() {
@@ -218,7 +164,9 @@ func (m *MainApp) Run() {
 		}
 	}()
 
+	m.listenForPreviews()
 	m.app.Run()
+	m.cleanupGui()
 }
 
 func (root *MainAppRoot) HandleEvent(event tcell.Event) bool {

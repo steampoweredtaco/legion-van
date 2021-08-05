@@ -1,3 +1,6 @@
+/*
+main gui command is just a demo app using the gui for prototyping and testing new ideas.
+*/
 package main
 
 import (

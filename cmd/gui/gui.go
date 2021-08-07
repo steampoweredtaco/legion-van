@@ -20,7 +20,7 @@ func main() {
 	debug := flag.Bool("debug", false, "set gui to virtual screen so debug can happen")
 	flag.Parse()
 
-	guiApp := gui.NewMainApp("legion-ban", log.StandardLogger())
+	guiApp := gui.NewMainApp*"legion-ban", log.StandardLogger())
 	if *debug {
 		simScreen := tcell.NewSimulationScreen("")
 		simScreen.SetSize(80, 25)

@@ -2,6 +2,7 @@ package bananoutils
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,9 +11,17 @@ import (
 	legion "github.com/steampoweredtaco/legion-van/image"
 )
 
-func GrabMonkey(publicAddr Account, format legion.ImageFormat) (io.Reader, error) {
+var (
+	monkeyBase = "https://monkey.banano.cc"
+)
+
+func ChangeMonkeyServer(URL string) {
+	monkeyBase = URL
+}
+
+func GrabMonkey(ctx context.Context, publicAddr Account, format legion.ImageFormat) (io.Reader, error) {
 	var addressBuilder strings.Builder
-	addressBuilder.WriteString("https://monkey.banano.cc/api/v1/monkey/")
+	addressBuilder.WriteString(monkeyBase + "/api/v1/monkey/")
 	addressBuilder.WriteString(string(publicAddr))
 	// svg is friendlier on the server, so do conversion if needed client side
 	addressBuilder.WriteString("?format=svg")

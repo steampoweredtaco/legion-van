@@ -64,7 +64,6 @@ func getTermCharPixelWxH(screen termbox.Screen) (width, height int) {
 		return
 	}
 	widthScreen, heightScreen := screen.Size()
-	log.Infof("Got from screen %d %d", widthScreen, heightScreen)
 	// w/h = defaultRatio
 	// w = h * defaultRatio
 	// h = w/defaultRatio

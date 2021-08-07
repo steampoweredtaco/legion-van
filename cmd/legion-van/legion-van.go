@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	_ "net/http/pprof"
+
 	"github.com/Pallinder/go-randomdata"
 	"github.com/bbedward/nano/address"
 	"github.com/gdamore/tcell/v2"
@@ -60,6 +62,7 @@ var config struct {
 	format         targetFormat
 	batch_size     *uint
 	debug          *bool
+	monkeyServer   *string
 }
 
 type targetFormat string
@@ -72,9 +75,10 @@ func setupFlags() {
 	config.max_requests = flag.Uint("max_requests", 4, "Maxiumum outstanding requests to spyglass.")
 	config.disablePreview = flag.Bool("disable_preview", false, "Disable preview of found monkey in terminal, when enabled press any key to continue with next preview.")
 	config.batch_size = flag.Uint("batch_size", 2500, "Number of monkeys to test per API request, higher or lower may affect performance")
+	config.monkeyServer = flag.String("monkey_api", "https://monkey.banano.cc", "To change the backend monkey server, defaults to official one.")
 	flag.Var(&config.format, "format", "set the target image format for saving monkey found in options are svg or png. svg is faster")
-}
 
+}
 func parseFlags() {
 	flag.Parse()
 }
@@ -171,16 +175,18 @@ func (db walletsDB) encodeAccountsAsJSON() io.Reader {
 
 func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
-	getStatsURL := "https://monkey.banano.cc/api/v1/monkey/dtl"
+	getStatsURL := fmt.Sprintf("%s/api/v1/monkey/dtl", *config.monkeyServer)
 	var totalCount uint64
 	var survivorCount uint64
+	raidName := strings.Title(randomdata.Adjective() + " " + randomdata.Noun())
+	log.Infof("Raiding with %s clan", raidName)
 main:
 	for {
 
 		// Exit early there are web errors and then the app shutsdown
 		select {
 		case <-ctx.Done():
-			log.Infof("Stopping a monKey raid.")
+			log.Infof("stopping the %s raid.", raidName)
 			return
 		default:
 		}
@@ -189,7 +195,7 @@ main:
 		jsonBody["addresses"] = wallets.getAccounts()
 		jsonReader := wallets.encodeAccountsAsJSON()
 
-		request, err := http.NewRequest("POST", getStatsURL, jsonReader)
+		request, err := http.NewRequestWithContext(ctx, "POST", getStatsURL, jsonReader)
 		if err != nil {
 			log.Errorf("Could not get monkey stats %s", err)
 			continue
@@ -204,7 +210,7 @@ main:
 		}
 
 		if response.StatusCode != 200 {
-			log.Warningf("Non 200 error returned (%d %s) sleeping 10 seconds cause server is probably loaded", response.StatusCode, response.Status)
+			log.Warningf("non 200 error returned (%d %s) sleeping 10 seconds cause server is probably loaded", response.StatusCode, response.Status)
 			time.Sleep(time.Second * 10)
 			continue
 		}
@@ -212,8 +218,7 @@ main:
 		results := make(map[string]MonkeyStats)
 		err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
 		if err != nil {
-			log.Warningf("could not unmarshal response: %s sleeping for a bit to not flood", err)
-			time.Sleep(time.Second * 10)
+			log.Warningf("could not unmarshal response: %s", err)
 			continue
 		}
 
@@ -227,7 +232,7 @@ main:
 		for _, monkey := range monKeys {
 			select {
 			case <-ctx.Done():
-				log.Infof("Stopping a monKey raid.")
+				log.Infof("stopping the %s raid.", raidName)
 				break main
 			default:
 				totalCount++
@@ -238,7 +243,7 @@ main:
 			}
 		}
 	}
-	log.Infof("This banano republic raided with a total of %d monkeys and %d survivor monKeys!", totalCount, survivorCount)
+	log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
 }
 
 func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
@@ -277,7 +282,7 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 		default:
 		}
 
-		monkeySVG, err := bananoutils.GrabMonkey(bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
+		monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
 		if err != nil {
 			log.Warn("lost a monkey %s", err)
 			continue
@@ -320,7 +325,7 @@ func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, m
 		select {
 		case monkey := <-monkeyDataChan:
 			// grab as svg as it is nicer to the server and we can convert it locally
-			monkeySVG, err := bananoutils.GrabMonkey(bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
+			monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
 			if err != nil {
 				log.Warnf("could not convert monkey to preview: %s %s", monkey.SillyName, err)
 				continue
@@ -394,13 +399,14 @@ func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyC
 	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, wg)
 }
 
-func GrabMonkey(publicAddr bananoutils.Account) io.Reader {
+func GrabMonkey(ctx context.Context, publicAddr bananoutils.Account) io.Reader {
 
 	var addressBuilder strings.Builder
-	addressBuilder.WriteString("https://monkey.banano.cc/api/v1/monkey/")
+	addressBuilder.WriteString(*config.monkeyServer)
+	addressBuilder.WriteString("/api/v1/monkey/")
 	addressBuilder.WriteString(string(publicAddr))
 	addressBuilder.WriteString("?format=svg")
-	request, _ := http.NewRequest("GET", addressBuilder.String(), nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", addressBuilder.String(), nil)
 
 	response, err := httpClient.Do(request)
 	if err != nil {
@@ -426,6 +432,8 @@ func setupHttp() {
 		Timeout:   120 * time.Second,
 		Transport: httpTransport,
 	}
+
+	bananoutils.ChangeMonkeyServer(*config.monkeyServer)
 }
 
 func setupLog() io.Closer {
@@ -453,7 +461,11 @@ func setupGui(ctx context.Context, cleanupMain context.CancelFunc) *gui.MainApp 
 	if *config.debug {
 		simScreen := tcell.NewSimulationScreen("")
 		simScreen.SetSize(80, 25)
+		simScreen.Init()
 		guiApp.SetTerminalScreen(simScreen)
+
+		// Workaround due to an issue with using a predefined screen with cview.
+		guiApp.ForceDebugResize()
 	}
 
 	return guiApp
@@ -486,6 +498,7 @@ func setupOutputDir() string {
 }
 
 func main() {
+	runtime.SetBlockProfileRate(1)
 	setupFlags()
 	parseFlags()
 	logFile := setupLog()
@@ -505,7 +518,7 @@ func main() {
 	finishedChan := make(chan struct{})
 	defer close(finishedChan)
 
-	go func(done chan<- struct{}) {
+	go func() {
 		monkeyNameChan := make(chan string, 100)
 		monkeyDataChan := make(chan MonkeyStats, 1000)
 		monkeyDisplayChan := make(chan MonkeyStats, 10)
@@ -540,8 +553,10 @@ func main() {
 		close(monkeyDataChan)
 		wgProcessing.Wait()
 		close(monkeyNameChan)
-		done <- struct{}{}
-	}(finishedChan)
+		gui.MainHasShutdown()
+	}()
+
+	go http.ListenAndServe(":8888", nil)
 
 	gui.Run()
 }

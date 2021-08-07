@@ -7,7 +7,9 @@ import (
 	"context"
 	"image"
 	"sync"
+	"time"
 
+	"code.rocketnine.space/tslocum/cview"
 	"github.com/gdamore/tcell/v2"
 	"github.com/gdamore/tcell/v2/views"
 	"github.com/sirupsen/logrus"
@@ -18,33 +20,23 @@ type MonkeyPreview struct {
 	Title string
 }
 
-type previewModel struct {
-	imageViewModel *imageModel
-	titleWidget    *views.Text
-}
-
 type MainApp struct {
-	root        MainAppRoot
-	app         views.Application
-	title       *views.Text
-	status      *views.TextBar
-	ctx         context.Context
-	mainCancel  context.CancelFunc
-	preview     [4]*previewModel
-	previewChan chan MonkeyPreview
-	log         *logrus.Logger
-
-	previewWG *sync.WaitGroup
-}
-
-type MainAppRoot struct {
-	views.BoxLayout
-	mainApp *MainApp
+	app          *cview.Application
+	status       *views.TextBar
+	ctx          context.Context
+	mainCancel   context.CancelFunc
+	preview      [4]*imageBox
+	previewChan  chan MonkeyPreview
+	log          *logrus.Logger
+	previewWG    *sync.WaitGroup
+	mainDoneChan chan struct{}
+	once         sync.Once
 }
 
 func (a *MainApp) SetPreview(index int, img image.Image, title string) {
-	a.preview[index].imageViewModel.setImage(img)
-	a.preview[index].titleWidget.SetText(title)
+	a.preview[index].setImage(img)
+	a.preview[index].SetTitle(title)
+	a.preview[index].SetTitleAlign(cview.AlignCenter)
 }
 
 func (a *MainApp) SetTerminalScreen(s tcell.Screen) {
@@ -62,68 +54,80 @@ func (a *MainApp) PNGPreviewChan() chan<- MonkeyPreview {
 
 func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, log *logrus.Logger) *MainApp {
 
-	previewStyle := tcell.StyleDefault.Foreground(tcell.ColorGhostWhite)
 	mainApp := new(MainApp)
 	mainApp.previewChan = make(chan MonkeyPreview, 4)
-
+	mainApp.mainDoneChan = make(chan struct{})
 	if log != nil {
 		mainApp.log = log
 	}
-	panel := views.NewPanel()
-	mainApp.status = views.NewTextBar()
-	mainApp.status.SetLeft("Simple", tcell.StyleDefault.Background(tcell.ColorYellowGreen))
-	mainApp.title = views.NewText()
-	mainApp.title.SetText(title)
-	mainApp.title.SetAlignment(views.HAlignCenter)
-	body := views.NewBoxLayout(views.Vertical)
-	body.SetOrientation(views.Vertical)
-	bodyMain := views.NewBoxLayout(views.Horizontal)
 
+	mainApp.app = cview.NewApplication()
+
+	flexBox := cview.NewFlex()
+	flexBox.SetFullScreen(true)
+	flexBox.SetTitle(title)
 	for i := 0; i < 4; i++ {
-		previewPanel := views.NewPanel()
-		title := views.NewText()
-		title.SetAlignment(views.HAlignCenter)
-		previewPanel.SetTitle(title)
-		previewWindow := views.NewCellView()
-		model := NewImageModel(nil, 30, 10)
-		mainApp.preview[i] = &previewModel{imageViewModel: model, titleWidget: title}
-		previewPanel.Watch(model)
-		previewPanel.AddWidget(previewWindow, .25)
-		bodyMain.AddWidget(previewPanel, .25)
-		previewWindow.SetModel(model)
-		previewWindow.SetStyle(previewStyle)
+		imgBox := NewImageBox(nil, 30, 10)
+		imgBox.SetBorder(true)
+		flexBox.AddItem(imgBox, 0, 1, false)
+		mainApp.preview[i] = imgBox
 	}
-	panel.SetTitle(mainApp.title)
-	panel.SetContent(bodyMain)
-	panel.SetStatus(mainApp.status)
 
-	mainApp.root.AddWidget(panel, 1)
-	mainApp.root.mainApp = mainApp
-	mainApp.root.SetOrientation(views.Vertical)
+	mainApp.app.SetRoot(flexBox, true)
+	captureHandler := func(event *tcell.EventKey) *tcell.EventKey {
+		return mainApp.HandleEvent(event)
+	}
 
-	mainApp.app.SetRootWidget(&mainApp.root)
+	mainApp.app.SetInputCapture(captureHandler)
+
 	mainApp.ctx, mainApp.mainCancel = ctx, mainCancel
 	return mainApp
+}
+
+// ForceDebugResize is required when adding a previous screen because widht and height will not be setup correct, this seems like a bug.
+func (a *MainApp) ForceDebugResize() {
+	w, h := a.app.GetScreen().Size()
+	event := tcell.NewEventResize(w, h)
+	a.app.QueueEvent(event)
 }
 
 func (mainApp *MainApp) Done() <-chan struct{} {
 	return mainApp.ctx.Done()
 }
 
+// MainHasShtudown notifies the gui that the main app and use of any sender channels from
+// the mainapp are not in use any longer.  This is required before the Quit methods will work
+// because mainApp is responsible for shutting down the gui sender chans, such as preview, that
+// the main app controls the lifetime of.
+func (mainApp *MainApp) MainHasShutdown() {
+	mainApp.mainDoneChan <- struct{}{}
+}
+
 func (mainApp *MainApp) ForceQuit() {
-	mainApp.app.Quit()
+	mainApp.app.QueueUpdate(func() { mainApp.app.Stop() })
 }
 
 func (m *MainApp) Quit() {
-	defer func() {
-		if r := recover(); r != nil {
-			m.app.Quit()
-			m.log.Error(r)
-		}
-	}()
 	// notify all users of the gui before shutting down the gui
 	m.mainCancel()
-	m.app.Quit()
+	// Cannot cleanup send channels from main until verification that main is done using them
+main:
+	for {
+		deadline := time.NewTimer(time.Second * 10)
+		select {
+		case <-m.mainDoneChan:
+			logrus.Info("Shutting down main gui after main app has reported done")
+			break main
+		case <-deadline.C:
+			logrus.Info("tick")
+		}
+
+	}
+	logrus.Info("Closing channel")
+	close(m.previewChan)
+	logrus.Info("Sending gui queue to stop qui")
+	m.app.QueueUpdate(func() { m.app.Stop() })
+	logrus.Info("Set hasShutdown to true")
 }
 
 func (m *MainApp) processPreviews() {
@@ -136,11 +140,11 @@ func (m *MainApp) processPreviews() {
 			logrus.Debug("shutting down preview listener")
 			return
 		case monkeyPreview := <-m.previewChan:
-			previewModel := m.preview[nextPreviewPane%4]
-			previewModel.imageViewModel.setImage(monkeyPreview.Image)
-			previewModel.titleWidget.SetText(monkeyPreview.Title)
+			imageBox := m.preview[nextPreviewPane%4]
+			imageBox.setImage(monkeyPreview.Image)
+			imageBox.SetTitle(monkeyPreview.Title)
 			nextPreviewPane++
-			m.app.Update()
+			m.app.QueueUpdateDraw(func() {}, imageBox)
 		}
 	}
 }
@@ -148,7 +152,7 @@ func (m *MainApp) processPreviews() {
 func (m *MainApp) listenForPreviews() {
 	m.previewWG = new(sync.WaitGroup)
 	// TODO make the number of preview panes configurable.
-	m.previewWG.Add(4)
+	m.previewWG.Add(1)
 	go m.processPreviews()
 }
 
@@ -157,25 +161,15 @@ func (m *MainApp) cleanupGui() {
 }
 
 func (m *MainApp) Run() {
-	defer func() {
-		if r := recover(); r != nil {
-			m.app.Quit()
-			m.log.Error(r)
-		}
-	}()
-
 	m.listenForPreviews()
 	m.app.Run()
 	m.cleanupGui()
 }
 
-func (root *MainAppRoot) HandleEvent(event tcell.Event) bool {
-	switch ev := event.(type) {
-	case *tcell.EventKey:
-		if ev.Key() == tcell.KeyEscape {
-			root.mainApp.Quit()
-			return true
-		}
+func (mainApp *MainApp) HandleEvent(event *tcell.EventKey) *tcell.EventKey {
+	if event.Key() == tcell.KeyEscape {
+		mainApp.once.Do(mainApp.Quit)
+		return nil
 	}
-	return root.BoxLayout.HandleEvent(event)
+	return event
 }

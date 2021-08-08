@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	//	_ "net/http/pprof"
+	_ "net/http/pprof"
 
 	"github.com/Pallinder/go-randomdata"
 	"github.com/bbedward/nano/address"
@@ -316,7 +316,7 @@ func matchFilters(monkey MonkeyStats) bool {
 		fitlerMatchAny(filter.Tail, monkey.Tail)
 
 }
-func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, wg *sync.WaitGroup) {
+func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, deltaChan chan<- uint64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	getStatsURL := fmt.Sprintf("%s/api/v1/monkey/dtl", config.MonkeyServer)
 	var totalCount uint64
@@ -373,6 +373,7 @@ main:
 			monKeys[len(monKeys)-1].PrivateKey = wallets.lookupWalletSeed(address)
 		}
 
+		var totalDelta uint64
 		for _, monkey := range monKeys {
 			select {
 			case <-ctx.Done():
@@ -380,6 +381,7 @@ main:
 				break main
 			default:
 				totalCount++
+				totalDelta++
 				if matchFilters(monkey) {
 					survivorCount++
 					select {
@@ -389,11 +391,13 @@ main:
 				}
 			}
 		}
+		deltaChan <- totalDelta
+
 	}
 	log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
 }
 
-func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats) {
+func outputMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats) {
 
 	var convert func(svg io.Reader) (io.Reader, error)
 	extension := "." + strings.ToLower(targetFormat)
@@ -420,8 +424,11 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 		log.Fatalf("cannot convert to format %s.", targetFormat)
 	}
 
-	for monkey := range monkeyDataChan {
+	for {
+
+		var monkey MonkeyStats
 		select {
+		case monkey = <-monkeyDataChan:
 		case <-ctx.Done():
 			log.Infof("Stopping some monKey's looting.")
 			return
@@ -470,30 +477,26 @@ func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, m
 	for {
 		select {
 		case monkey := <-monkeyDataChan:
-			start := time.Now()
+			// start := time.Now()
 			// grab as svg as it is nicer to the server and we can convert it locally
 			monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
-			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not convert monkey to preview: %s %s", monkey.SillyName, err)
 				continue
 			}
 			data, err := io.ReadAll(monkeySVG)
-			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not read data for moneky to preview: %s %s", monkey.SillyName, err)
 				continue
 			}
 
 			imagePNG, err := legionImage.ConvertSvgToBinary(data, legionImage.PNGFormat, 250)
-			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not convert svg monkey image to png data to display: %s %s", monkey.SillyName, err)
 				continue
 			}
 
 			img, _, err := image.Decode(bytes.NewReader(imagePNG))
-			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not decode image data to display for monkey: %s %s", monkey.SillyName, err)
 				continue
@@ -513,19 +516,20 @@ func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, m
 
 func processMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, monkeyNameChan chan<- string, monkeyDisplayChan chan<- MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
-	writeMonkeyChan := make(chan MonkeyStats, 100)
-
-	defer close(writeMonkeyChan)
+	outputMonkeyChan := make(chan MonkeyStats, 100)
 
 	go func() {
 		writeMonkeyWG := new(sync.WaitGroup)
 		for i := 0; i < 10; i++ {
 			writeMonkeyWG.Add(1)
-			go writeMonkeyData(ctx, targetDir, targetFormat, writeMonkeyChan)
+			go func() {
+				outputMonkeyData(ctx, targetDir, targetFormat, outputMonkeyChan)
+				writeMonkeyWG.Done()
+			}()
 		}
 		writeMonkeyWG.Wait()
 		// All the writers are done, so chanel needs to close
-		close(writeMonkeyChan)
+		close(outputMonkeyChan)
 	}()
 
 main:
@@ -538,7 +542,7 @@ main:
 				break main
 			}
 			monkeyNameChan <- monkey.SillyName
-			writeMonkeyChan <- monkey
+			outputMonkeyChan <- monkey
 			if monkeyDisplayChan != nil {
 				wg.Add(1)
 				go func() {
@@ -555,10 +559,10 @@ main:
 	}
 }
 
-func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyChan chan<- MonkeyStats, wg *sync.WaitGroup) {
+func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyChan chan<- MonkeyStats, deltaChan chan<- uint64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	wg.Add(1)
-	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, wg)
+	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, deltaChan, wg)
 }
 
 func GrabMonkey(ctx context.Context, publicAddr bananoutils.Account) io.Reader {
@@ -679,22 +683,28 @@ func main() {
 	defer close(finishedChan)
 
 	go func() {
-		monkeyNameChan := make(chan string, 100)
+		defer gui.MainHasShutdown()
 		monkeyDataChan := make(chan MonkeyStats, 1000)
+		wgMonkeyDataChan := new(sync.WaitGroup)
+
+		monkeyNameChan := make(chan string, 100)
 		monkeyDisplayChan := make(chan MonkeyStats, 10)
-		wg := new(sync.WaitGroup)
-		wgProcessing := new(sync.WaitGroup)
+		wgProccessDisplayAndNameChan := new(sync.WaitGroup)
+
+		// required to finish before closing out the main gui
+		PNGPreviewChanWG := new(sync.WaitGroup)
+
 		for i := uint(0); i < config.MaxRequests; i++ {
-			wg.Add(1)
-			go generateFlamingMonkeys(ctx, config.BatchSize, monkeyDataChan, wg)
-			wgProcessing.Add(1)
-			go processMonkeyData(ctx, targetDir, string(config.Format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProcessing)
+			wgMonkeyDataChan.Add(1)
+			go generateFlamingMonkeys(ctx, config.BatchSize, monkeyDataChan, gui.TotalDeltaChan(), wgMonkeyDataChan)
+			wgProccessDisplayAndNameChan.Add(1)
+			go processMonkeyData(ctx, targetDir, string(config.Format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProccessDisplayAndNameChan)
 		}
-		wgProcessing.Add(4)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
+		PNGPreviewChanWG.Add(4)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
 		var monkeyHeadCount uint64
 	main:
 		for {
@@ -712,11 +722,11 @@ func main() {
 		}
 		log.Infof("Total monKeys confirmed alive %d", monkeyHeadCount)
 		log.Info("Waiting for pending writes and network queries to close...there may be more survivors on the lifeboat")
-		wg.Wait()
+		wgMonkeyDataChan.Wait()
 		close(monkeyDataChan)
-		wgProcessing.Wait()
+		wgProccessDisplayAndNameChan.Wait()
 		close(monkeyNameChan)
-		gui.MainHasShutdown()
+		PNGPreviewChanWG.Wait()
 	}()
 
 	go http.ListenAndServe(":8888", nil)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"image"
 	"io"
@@ -18,17 +17,182 @@ import (
 	"sync"
 	"time"
 
-	_ "net/http/pprof"
+	//	_ "net/http/pprof"
 
 	"github.com/Pallinder/go-randomdata"
 	"github.com/bbedward/nano/address"
 	"github.com/gdamore/tcell/v2"
+	"github.com/jessevdk/go-flags"
 	log "github.com/sirupsen/logrus"
 	"github.com/steampoweredtaco/legion-van/bananoutils"
 	"github.com/steampoweredtaco/legion-van/gui"
 	legionImage "github.com/steampoweredtaco/legion-van/image"
 	"github.com/ugorji/go/codec"
 )
+
+func (*targetFormat) String() string {
+	return "svg"
+}
+
+func (targetFmt *targetFormat) UnmarshalFlag(value string) error {
+	*targetFmt = targetFormat(strings.ToLower(value))
+	return nil
+}
+
+type targetFormat string
+
+var config struct {
+	HowLongToRun   time.Duration `long:"duration" description:"How long to run the search for" default:"1m"`
+	MaxRequests    uint          `long:"max_requests" description:"Maxiumum outstanding parallel requests to monkeyapi" default:"4"`
+	DisablePreview bool          `long:"disable_review" description:"Disable the gui and preview of monkeys"`
+	Format         targetFormat  `long:"image_format" description:"Set the target image format for saving monkey found in options are svg or png. svg is faster" default:"png" choice:"png" choice:"svg"`
+	BatchSize      uint          `long:"batch_size" description:"Number of monkeys to test per batch request, higher or lower may affect performance" default:"2500"`
+	Debug          bool          `long:"debug" description:"Changes logging and makes terminal virtual for debugging issues."`
+	MonkeyServer   string        `long:"monkey_api" description:"To change the backend monkey server, defaults to the official one." default:"https://monkey.banano.cc"`
+}
+
+var filter struct {
+	HelpVanity bool     `long:"help-vanity" short:"V"`
+	Hat        []string `short:"H" description:"hat option. See --help-vanity for list"`
+	Glasses    []string `short:"G" description:"glasses option. See --help-vanity for list"`
+	Mouth      []string `short:"O" description:"mouth option. See --help-vanity for list"`
+	Cloths     []string `short:"C" description:"cloths option. See --help-vanity for list"`
+	Feet       []string `short:"F" description:"feet option. See --help-vanity for list"`
+	Tail       []string `short:"T" description:"tail option. See --help-vanity for list"`
+	Misc       []string `short:"M" description:"misc  option. See --help-vanity for list"`
+}
+
+func printVanityFilterUsage() {
+	usage := `
+Vanity Filters Usage
+--------------------
+Each unique vanity -A,-C,-M (etc) if present requires at least one of
+those options to be present in the found monKey.
+
+WARNING: If you make a typo you will never find a monkey, validation and odds
+coming to a monKey near you soon.
+
+For example the following options would require a flamethrower and cap
+./legion-van -M flamethrower -H cap
+===
+Every vanity filter option may be specified multiple times. If they are,
+the monkey matched may have any of those options for that vanity.
+
+For example, the following options would require a flamethrower or camera
+./legion-van -M flamethrower -M camera
+===
+Mutliple unique vanity options and multiple instances of the same vanity
+may be supplied and resutls in a match if both of those unique vanity options
+are present but in any combination of the multiple choices supplied to each 
+option.
+
+For example the following requires a monkey with either a flamethrower or camera
+AND a cap or beanie:
+./legion-van -M flamethrower -M camera -C cap -C beanie
+
+===
+Each option choice maybe abbrevated to match the more general option.
+
+For example, to get money's that match a pink tie:
+./legion-van -M flamethrower -M tie-pink
+
+But to get any color tie:
+./legion-van -M flamethrower -M tie
+
+Vanity Filter Choices
+---------------------
+Each option maybe supplied as -<option> <value> or -<option>=<value>
+To select multiple choices that begin with the same starting letters just
+use those starting letters (ie: -M tie matches -M tie-pink -M tie-cyan)
+
+-H <Hat_option>:    values:
+                        bandana
+                        beanie-,beanie-banano,beanie-hippie,beanie-long
+                        cap-,cap-backwards,cap-bebe,cap-carlos,cap-hng,
+                        cap-hng-plus,cap-kappa,cap-pepe,cap-rick,camp-smug,
+                        cap-smug-green,cap-thonk
+                        crown
+                        fedora-,fedora-long
+                        hat-cowboy,hat-jester
+                        helmet-viking
+
+-G <Glasses>:       values:
+                        eye-patch
+                        glasses-nerd-cyan,glasses-nerd-green,glasses-nerd-pink
+                        monocle,
+                        sunglasses-aviator-cyan,sunglasses-aviator-green,
+                        sunglasses-aviator-yellow,sunglasses-thug
+
+-O <mOuths>:        values:
+                        cigar
+                        confused
+                        joint
+                        meh
+                        pipe
+                        smile-big-teeth,smile-normal,smile-tongue
+
+-C <Cloths>         values:
+                        overalls-blue,overalls-red
+                        pants-buisness-blue,pants-flower
+                        tshirt-long-stripes,tshirt-short-white
+
+-F <Feet>           values:
+                        sneakers-blue,sneakers-green,sneakers-red,
+                        sneakers-swagger
+                        socks-h-stripe,socks-v-stripe
+                
+-T <Tail>           values:
+                        tail-sock
+
+-M <Misc>           values:
+                        banana-hands,banana-right-hand
+                        bowtie
+                        camera
+                        club
+                        flamethrower
+                        gloves-white
+                        guitar
+                        microphone
+                        necklace
+                        tie-cyan,tie-pink
+                        whisky
+`
+
+	fmt.Println(usage)
+}
+
+func makeLower(as []string) []string {
+	res := make([]string, len(as))
+	for i, value := range as {
+		res[i] = strings.ToLower(value)
+	}
+	return res
+}
+
+func parseFlags() {
+	parser := flags.NewParser(&config, flags.Default)
+	parser.AddGroup("Vanity Filters", "These options allow for filtering of specific monKey features.", &filter)
+	_, err := parser.Parse()
+
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	if filter.HelpVanity {
+		printVanityFilterUsage()
+		os.Exit(1)
+	}
+
+	filter.Hat = makeLower(filter.Hat)
+	filter.Glasses = makeLower(filter.Glasses)
+	filter.Mouth = makeLower(filter.Mouth)
+	filter.Cloths = makeLower(filter.Cloths)
+	filter.Feet = makeLower(filter.Feet)
+	filter.Tail = makeLower(filter.Tail)
+	filter.Misc = makeLower(filter.Misc)
+
+}
 
 var (
 	jsonHandler = new(codec.JsonHandle)
@@ -38,50 +202,6 @@ var (
 	httpTransport *http.Transport
 	httpClient    *http.Client
 )
-
-func (*targetFormat) String() string {
-	return "svg"
-}
-
-func (targetFmt *targetFormat) Set(value string) error {
-	switch format := strings.ToLower(value); format {
-	case "svg":
-		fallthrough
-	case "png":
-		*targetFmt = targetFormat(format)
-	default:
-		return fmt.Errorf("only svg or png supported")
-	}
-	return nil
-}
-
-var config struct {
-	interval       *time.Duration
-	max_requests   *uint
-	disablePreview *bool
-	format         targetFormat
-	batch_size     *uint
-	debug          *bool
-	monkeyServer   *string
-}
-
-type targetFormat string
-
-func setupFlags() {
-	config.format = "svg"
-
-	config.debug = flag.Bool("debug", false, "changes logging and makes terminal virtual for debugging issues.")
-	config.interval = flag.Duration("interval", time.Minute, "Frequency to update represenitative data.")
-	config.max_requests = flag.Uint("max_requests", 4, "Maxiumum outstanding requests to spyglass.")
-	config.disablePreview = flag.Bool("disable_preview", false, "Disable preview of found monkey in terminal, when enabled press any key to continue with next preview.")
-	config.batch_size = flag.Uint("batch_size", 2500, "Number of monkeys to test per API request, higher or lower may affect performance")
-	config.monkeyServer = flag.String("monkey_api", "https://monkey.banano.cc", "To change the backend monkey server, defaults to official one.")
-	flag.Var(&config.format, "format", "set the target image format for saving monkey found in options are svg or png. svg is faster")
-
-}
-func parseFlags() {
-	flag.Parse()
-}
 
 func GenerateAddress() string {
 	pub, _ := address.GenerateKey()
@@ -173,12 +293,36 @@ func (db walletsDB) encodeAccountsAsJSON() io.Reader {
 	return bytes.NewBuffer(data)
 }
 
+func fitlerMatchAny(options []string, s string) bool {
+	// filters always match empty options
+	if len(options) == 0 {
+		return true
+	}
+	for _, prefix := range options {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchFilters(monkey MonkeyStats) bool {
+	return fitlerMatchAny(filter.Misc, monkey.Misc) &&
+		fitlerMatchAny(filter.Cloths, monkey.ShirtPants) &&
+		fitlerMatchAny(filter.Feet, monkey.Shoes) &&
+		fitlerMatchAny(filter.Glasses, monkey.Glasses) &&
+		fitlerMatchAny(filter.Hat, monkey.Hat) &&
+		fitlerMatchAny(filter.Mouth, monkey.Mouth) &&
+		fitlerMatchAny(filter.Tail, monkey.Tail)
+
+}
 func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
-	getStatsURL := fmt.Sprintf("%s/api/v1/monkey/dtl", *config.monkeyServer)
+	getStatsURL := fmt.Sprintf("%s/api/v1/monkey/dtl", config.MonkeyServer)
 	var totalCount uint64
 	var survivorCount uint64
 	raidName := strings.Title(randomdata.Adjective() + " " + randomdata.Noun())
+
 	log.Infof("Raiding with %s clan", raidName)
 main:
 	for {
@@ -187,7 +331,7 @@ main:
 		select {
 		case <-ctx.Done():
 			log.Infof("stopping the %s raid.", raidName)
-			return
+			break main
 		default:
 		}
 		wallets := generateManyWallets(monkeysPerRequest)
@@ -236,9 +380,12 @@ main:
 				break main
 			default:
 				totalCount++
-				if strings.HasPrefix(monkey.Misc, "flamethrower") {
+				if matchFilters(monkey) {
 					survivorCount++
-					monkeySendChan <- monkey
+					select {
+					case monkeySendChan <- monkey:
+					case <-ctx.Done():
+					}
 				}
 			}
 		}
@@ -246,8 +393,7 @@ main:
 	log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
 }
 
-func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
-	defer wg.Done()
+func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats) {
 
 	var convert func(svg io.Reader) (io.Reader, error)
 	extension := "." + strings.ToLower(targetFormat)
@@ -259,7 +405,7 @@ func writeMonkeyData(ctx context.Context, targetDir string, targetFormat string,
 			if err != nil {
 				return nil, err
 			}
-			data, err := legionImage.ConvertSvgToBinary(dataBytes, legionImage.PNGFormat, 1000)
+			data, err := legionImage.ConvertSvgToBinary(dataBytes, legionImage.PNGFormat, 250)
 			if err != nil {
 				return nil, err
 			}
@@ -324,32 +470,41 @@ func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, m
 	for {
 		select {
 		case monkey := <-monkeyDataChan:
+			start := time.Now()
 			// grab as svg as it is nicer to the server and we can convert it locally
 			monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
+			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not convert monkey to preview: %s %s", monkey.SillyName, err)
 				continue
 			}
 			data, err := io.ReadAll(monkeySVG)
+			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not read data for moneky to preview: %s %s", monkey.SillyName, err)
 				continue
 			}
 
 			imagePNG, err := legionImage.ConvertSvgToBinary(data, legionImage.PNGFormat, 250)
+			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not convert svg monkey image to png data to display: %s %s", monkey.SillyName, err)
 				continue
 			}
 
 			img, _, err := image.Decode(bytes.NewReader(imagePNG))
+			log.Info(monkey.SillyName, time.Since(start))
 			if err != nil {
 				log.Warnf("could not decode image data to display for monkey: %s %s", monkey.SillyName, err)
 				continue
 			}
-			previewChan <- gui.MonkeyPreview{Image: img, Title: monkey.SillyName}
+			select {
+			case previewChan <- gui.MonkeyPreview{Image: img, Title: monkey.SillyName}:
+			case <-ctx.Done():
+			}
+
 		case <-ctx.Done():
-			log.Debug("stopping the monKey preview")
+			log.Info("stopping the monKey preview")
 			return
 		}
 	}
@@ -359,12 +514,19 @@ func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, m
 func processMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, monkeyNameChan chan<- string, monkeyDisplayChan chan<- MonkeyStats, wg *sync.WaitGroup) {
 	defer wg.Done()
 	writeMonkeyChan := make(chan MonkeyStats, 100)
+
 	defer close(writeMonkeyChan)
 
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go writeMonkeyData(ctx, targetDir, targetFormat, writeMonkeyChan, wg)
-	}
+	go func() {
+		writeMonkeyWG := new(sync.WaitGroup)
+		for i := 0; i < 10; i++ {
+			writeMonkeyWG.Add(1)
+			go writeMonkeyData(ctx, targetDir, targetFormat, writeMonkeyChan)
+		}
+		writeMonkeyWG.Wait()
+		// All the writers are done, so chanel needs to close
+		close(writeMonkeyChan)
+	}()
 
 main:
 	for {
@@ -402,7 +564,7 @@ func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyC
 func GrabMonkey(ctx context.Context, publicAddr bananoutils.Account) io.Reader {
 
 	var addressBuilder strings.Builder
-	addressBuilder.WriteString(*config.monkeyServer)
+	addressBuilder.WriteString(config.MonkeyServer)
 	addressBuilder.WriteString("/api/v1/monkey/")
 	addressBuilder.WriteString(string(publicAddr))
 	addressBuilder.WriteString("?format=svg")
@@ -433,7 +595,7 @@ func setupHttp() {
 		Transport: httpTransport,
 	}
 
-	bananoutils.ChangeMonkeyServer(*config.monkeyServer)
+	bananoutils.ChangeMonkeyServer(config.MonkeyServer)
 }
 
 func setupLog() io.Closer {
@@ -446,9 +608,8 @@ func setupLog() io.Closer {
 	}
 
 	stdOutWriter := os.Stderr
-	if *config.debug {
+	if config.Debug {
 		writer = io.MultiWriter(logFile, stdOutWriter)
-		log.SetReportCaller(true)
 		log.SetOutput(writer)
 	} else {
 		log.SetOutput(logFile)
@@ -458,7 +619,7 @@ func setupLog() io.Closer {
 
 func setupGui(ctx context.Context, cleanupMain context.CancelFunc) *gui.MainApp {
 	guiApp := gui.NewMainApp(ctx, cleanupMain, "legion-ban", log.StandardLogger())
-	if *config.debug {
+	if config.Debug {
 		simScreen := tcell.NewSimulationScreen("")
 		simScreen.SetSize(80, 25)
 		simScreen.Init()
@@ -498,8 +659,7 @@ func setupOutputDir() string {
 }
 
 func main() {
-	runtime.SetBlockProfileRate(1)
-	setupFlags()
+	//runtime.SetBlockProfileRate(1)
 	parseFlags()
 	logFile := setupLog()
 	defer logFile.Close()
@@ -512,7 +672,7 @@ func main() {
 	targetDir := setupOutputDir()
 
 	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, *config.interval)
+	ctx, cancel := context.WithTimeout(ctx, config.HowLongToRun)
 	gui := setupGui(ctx, cancel)
 
 	finishedChan := make(chan struct{})
@@ -524,13 +684,16 @@ func main() {
 		monkeyDisplayChan := make(chan MonkeyStats, 10)
 		wg := new(sync.WaitGroup)
 		wgProcessing := new(sync.WaitGroup)
-		for i := uint(0); i < *config.max_requests; i++ {
+		for i := uint(0); i < config.MaxRequests; i++ {
 			wg.Add(1)
-			go generateFlamingMonkeys(ctx, *config.batch_size, monkeyDataChan, wg)
+			go generateFlamingMonkeys(ctx, config.BatchSize, monkeyDataChan, wg)
 			wgProcessing.Add(1)
-			go processMonkeyData(ctx, targetDir, string(config.format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProcessing)
+			go processMonkeyData(ctx, targetDir, string(config.Format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProcessing)
 		}
-		wgProcessing.Add(1)
+		wgProcessing.Add(4)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
+		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
 		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, wgProcessing)
 		var monkeyHeadCount uint64
 	main:
@@ -557,6 +720,5 @@ func main() {
 	}()
 
 	go http.ListenAndServe(":8888", nil)
-
 	gui.Run()
 }

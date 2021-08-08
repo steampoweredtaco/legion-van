@@ -14,9 +14,20 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/legion-van/legion-van.go",
-            "args": ["-format", "png", "-debug"],
+            "args": ["--image_format", "png", "--monkey_api=http://monkeyapi:5555", "-m" ,"flame"] ,
             "console": "internalConsole"
-        }
+        },
+        {
+            "name": "Launch Help Legion-Van",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/legion-van/legion-van.go",
+            "args": ["--help"],
+            "console": "internalConsole"
+        },
+
+
 
         {
             "name": "Launch Legion-Gui",

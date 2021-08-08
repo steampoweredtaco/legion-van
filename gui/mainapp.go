@@ -109,6 +109,7 @@ func (mainApp *MainApp) ForceQuit() {
 
 func (m *MainApp) Quit() {
 	// notify all users of the gui before shutting down the gui
+	logrus.Info("Canceling main")
 	m.mainCancel()
 	// Cannot cleanup send channels from main until verification that main is done using them
 main:
@@ -127,7 +128,7 @@ main:
 	close(m.previewChan)
 	logrus.Info("Sending gui queue to stop qui")
 	m.app.QueueUpdate(func() { m.app.Stop() })
-	logrus.Info("Set hasShutdown to true")
+
 }
 
 func (m *MainApp) processPreviews() {
@@ -144,7 +145,13 @@ func (m *MainApp) processPreviews() {
 			imageBox.setImage(monkeyPreview.Image)
 			imageBox.SetTitle(monkeyPreview.Title)
 			nextPreviewPane++
-			m.app.QueueUpdateDraw(func() {}, imageBox)
+			// We want to wait for preview completion before pushing out
+			// another
+			wg := new(sync.WaitGroup)
+			wg.Add(1)
+			logrus.Infof("Previewing %s", monkeyPreview.Title)
+			m.app.QueueUpdateDraw(func() { wg.Done() }, imageBox)
+			wg.Wait()
 		}
 	}
 }
@@ -166,9 +173,12 @@ func (m *MainApp) Run() {
 	m.cleanupGui()
 }
 
+func (m *MainApp) DebugPressEsc() {
+	m.once.Do(func() { m.Quit() })
+}
 func (mainApp *MainApp) HandleEvent(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyEscape {
-		mainApp.once.Do(mainApp.Quit)
+		go mainApp.once.Do(func() { mainApp.Quit() })
 		return nil
 	}
 	return event

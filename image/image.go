@@ -56,7 +56,6 @@ func load(filename string) (image.Image, error) {
 func getTermCharPixelWxH(screen termbox.Screen) (width, height int) {
 	var size [4]uint16
 	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(os.Stdout.Fd()), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&size)), 0, 0, 0); err != 0 {
-		log.Warn("Couldn't get term info for canvas size so making stuff up.")
 	}
 	width, height = int(size[2]), int(size[3])
 	if width > 0 && height > 0 {
@@ -259,11 +258,8 @@ func Destroy() {
 }
 func ConvertSvgToBinary(svgData []byte, format ImageFormat, size uint) ([]byte, error) {
 	mw := imagick.NewMagickWand()
-	defer mw.Destroy()
-
 	mw.SetImageFormat("SVG")
 	pixelWand := imagick.NewPixelWand()
-	defer pixelWand.Destroy()
 
 	pixelWand.SetColor("none")
 	mw.SetBackgroundColor(pixelWand)

@@ -19,5 +19,6 @@ require (
 	github.com/ugorji/go/codec v1.2.6
 	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
 	golang.org/x/image v0.0.0-20210628002857-a66eb6448b8d
+	golang.org/x/sys v0.0.0-20210806184541-e5e7981a1069 // indirect
 	gopkg.in/gographics/imagick.v3 v3.4.0
 )

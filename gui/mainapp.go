@@ -21,17 +21,18 @@ type MonkeyPreview struct {
 	Title string
 }
 
-type stats struct {
-	total   uint64
-	found   uint64
-	started time.Time
+type Stats struct {
+	Total         uint64
+	Found         uint64
+	TotalRequests uint64
+	started       time.Time
 }
 
 type MainApp struct {
 	app          *cview.Application
 	speed        *cview.TextView
-	totals       *cview.TextView
-	runtimeStats stats
+	total        *cview.TextView
+	runtimeStats Stats
 	ctx          context.Context
 	mainCancel   context.CancelFunc
 	preview      [4]*imageBox
@@ -39,12 +40,18 @@ type MainApp struct {
 	log          *logrus.Logger
 	previewWG    *sync.WaitGroup
 	mainDoneChan chan struct{}
-	totalDeltas  chan uint64
+	statDeltas   chan Stats
 	once         sync.Once
 }
 
-func (a *MainApp) TotalDeltaChan() chan<- uint64 {
-	return a.totalDeltas
+func (a *MainApp) UpdateStats(stats Stats) {
+	a.UpdateTotalStat(stats.Total)
+	a.UpdateFoundStat(stats.Found)
+	a.UpdateTotalRequestsStat(stats.TotalRequests)
+}
+
+func (a *MainApp) TotalDeltaChan() chan<- Stats {
+	return a.statDeltas
 }
 func (a *MainApp) SetPreview(index int, img image.Image, title string) {
 	a.preview[index].setImage(img)
@@ -52,12 +59,27 @@ func (a *MainApp) SetPreview(index int, img image.Image, title string) {
 	a.preview[index].SetTitleAlign(cview.AlignCenter)
 }
 
-func (a *MainApp) UpdateTotal(additional uint64) {
-	atomic.AddUint64(&a.runtimeStats.total, additional)
+func (a *MainApp) UpdateTotalStat(additional uint64) {
+	if additional == 0 {
+		return
+	}
+	atomic.AddUint64(&a.runtimeStats.Total, additional)
+}
+func (a *MainApp) UpdateFoundStat(additional uint64) {
+	if additional == 0 {
+		return
+	}
+	atomic.AddUint64(&a.runtimeStats.Found, additional)
+}
+func (a *MainApp) UpdateTotalRequestsStat(additional uint64) {
+	if additional == 0 {
+		return
+	}
+	atomic.AddUint64(&a.runtimeStats.TotalRequests, additional)
 }
 
 func (a *MainApp) UpdateSpeed() {
-	total := atomic.LoadUint64(&a.runtimeStats.total)
+	total := atomic.LoadUint64(&a.runtimeStats.Total)
 	duration := time.Since(a.runtimeStats.started)
 	if duration == 0 {
 		a.speed.SetText("they've gone deplaid")
@@ -66,6 +88,16 @@ func (a *MainApp) UpdateSpeed() {
 	statText := fmt.Sprintf("%.2f per second", tps)
 	a.speed.SetText(statText)
 	a.app.QueueUpdateDraw(func() {}, a.speed)
+}
+
+func (a *MainApp) UpdateTotal() {
+	totalFound := atomic.LoadUint64(&a.runtimeStats.Found)
+	total := atomic.LoadUint64(&a.runtimeStats.Total)
+	totalRequests := atomic.LoadUint64(&a.runtimeStats.TotalRequests)
+
+	statText := fmt.Sprintf("raid parties: %d raided: %d. looted: %d.", totalRequests, total, totalFound)
+	a.total.SetText(statText)
+	a.app.QueueUpdateDraw(func() {}, a.total)
 }
 
 func (a *MainApp) SetTerminalScreen(s tcell.Screen) {
@@ -86,7 +118,7 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	mainApp := new(MainApp)
 	mainApp.previewChan = make(chan MonkeyPreview, 4)
 	mainApp.mainDoneChan = make(chan struct{})
-	mainApp.totalDeltas = make(chan uint64, 20)
+	mainApp.statDeltas = make(chan Stats, 20)
 	if log != nil {
 		mainApp.log = log
 	}
@@ -115,6 +147,7 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	total := cview.NewTextView()
 	total.SetTextAlign(cview.AlignLeft)
 	total.SetText("readying the hordes")
+	mainApp.total = total
 	footer.AddItem(total, 0, 1, false)
 	footer.AddItem(speed, 0, 1, false)
 	flexBox.AddItem(footer, 1, 0, false)
@@ -225,8 +258,9 @@ func (m *MainApp) Run() {
 			select {
 			case <-ticker.C:
 				m.UpdateSpeed()
-			case delta := <-m.totalDeltas:
-				m.UpdateTotal(delta)
+				m.UpdateTotal()
+			case delta := <-m.statDeltas:
+				m.UpdateStats(delta)
 			case <-doneChan:
 				return
 			}

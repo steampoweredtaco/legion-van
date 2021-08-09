@@ -316,7 +316,7 @@ func matchFilters(monkey MonkeyStats) bool {
 		fitlerMatchAny(filter.Tail, monkey.Tail)
 
 }
-func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, deltaChan chan<- uint64, wg *sync.WaitGroup) {
+func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, deltaChan chan<- gui.Stats, wg *sync.WaitGroup) {
 	defer wg.Done()
 	getStatsURL := fmt.Sprintf("%s/api/v1/monkey/dtl", config.MonkeyServer)
 	var totalCount uint64
@@ -374,6 +374,7 @@ main:
 		}
 
 		var totalDelta uint64
+		var survivorDelta uint64
 		for _, monkey := range monKeys {
 			select {
 			case <-ctx.Done():
@@ -384,6 +385,7 @@ main:
 				totalDelta++
 				if matchFilters(monkey) {
 					survivorCount++
+					survivorDelta++
 					select {
 					case monkeySendChan <- monkey:
 					case <-ctx.Done():
@@ -391,8 +393,7 @@ main:
 				}
 			}
 		}
-		deltaChan <- totalDelta
-
+		deltaChan <- gui.Stats{Total: totalDelta, TotalRequests: 1, Found: survivorDelta}
 	}
 	log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
 }
@@ -559,7 +560,7 @@ main:
 	}
 }
 
-func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyChan chan<- MonkeyStats, deltaChan chan<- uint64, wg *sync.WaitGroup) {
+func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyChan chan<- MonkeyStats, deltaChan chan<- gui.Stats, wg *sync.WaitGroup) {
 	defer wg.Done()
 	wg.Add(1)
 	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, deltaChan, wg)

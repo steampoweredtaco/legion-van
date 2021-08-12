@@ -175,7 +175,6 @@ func parseFlags() {
 	_, err := parser.Parse()
 
 	if err != nil {
-		fmt.Println(err)
 		os.Exit(1)
 	}
 
@@ -433,12 +432,11 @@ func outputMonkeyData(ctx context.Context, targetDir string, targetFormat string
 		case <-ctx.Done():
 			log.Infof("Stopping some monKey's looting.")
 			return
-		default:
 		}
 
 		monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
 		if err != nil {
-			log.Warn("lost a monkey %s", err)
+			log.Warnf("lost a monkey %s", err)
 			continue
 		}
 
@@ -564,29 +562,6 @@ func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyC
 	defer wg.Done()
 	wg.Add(1)
 	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, deltaChan, wg)
-}
-
-func GrabMonkey(ctx context.Context, publicAddr bananoutils.Account) io.Reader {
-
-	var addressBuilder strings.Builder
-	addressBuilder.WriteString(config.MonkeyServer)
-	addressBuilder.WriteString("/api/v1/monkey/")
-	addressBuilder.WriteString(string(publicAddr))
-	addressBuilder.WriteString("?format=svg")
-	request, _ := http.NewRequestWithContext(ctx, "GET", addressBuilder.String(), nil)
-
-	response, err := httpClient.Do(request)
-	if err != nil {
-		log.Fatalf("could not get monkey %v", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		log.Fatalf("Non 200 error returned (%d %s)", response.StatusCode, response.Status)
-	}
-	defer response.Body.Close()
-	copy := new(bytes.Buffer)
-	io.Copy(copy, response.Body)
-	return copy
 }
 
 func setupHttp() {

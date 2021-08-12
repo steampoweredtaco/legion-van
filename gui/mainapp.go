@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,8 @@ type MainApp struct {
 	app          *cview.Application
 	speed        *cview.TextView
 	total        *cview.TextView
+	logview      *cview.TextView
+	logChan      chan *logrus.Entry
 	runtimeStats Stats
 	ctx          context.Context
 	mainCancel   context.CancelFunc
@@ -95,7 +98,7 @@ func (a *MainApp) UpdateTotal() {
 	total := atomic.LoadUint64(&a.runtimeStats.Total)
 	totalRequests := atomic.LoadUint64(&a.runtimeStats.TotalRequests)
 
-	statText := fmt.Sprintf("raid parties: %d raided: %d. looted: %d.", totalRequests, total, totalFound)
+	statText := fmt.Sprintf("raid parties: %.d raided: %d. looted: %d.", totalRequests, total, totalFound)
 	a.total.SetText(statText)
 	a.app.QueueUpdateDraw(func() {}, a.total)
 }
@@ -113,9 +116,33 @@ func (a *MainApp) PNGPreviewChan() chan<- MonkeyPreview {
 	return a.previewChan
 }
 
-func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, log *logrus.Logger) *MainApp {
+func (a *MainApp) Levels() []logrus.Level {
+	return []logrus.Level{logrus.PanicLevel, logrus.FatalLevel, logrus.ErrorLevel, logrus.WarnLevel, logrus.InfoLevel}
+}
 
+func (a *MainApp) Fire(entry *logrus.Entry) error {
+	go func() {
+		a.logChan <- entry
+	}()
+	return nil
+}
+
+func (a *MainApp) processLogMessages() {
+	for entry := range a.logChan {
+		msg := fmt.Sprintf("[%s]: %s", strings.ToUpper(entry.Level.String()), entry.Message)
+		a.app.QueueUpdateDraw(func() {
+			fmt.Fprintln(a.logview, msg)
+			a.logview.ScrollToEnd()
+		}, a.logview)
+	}
+}
+
+func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, log *logrus.Logger) *MainApp {
 	mainApp := new(MainApp)
+	mainApp.ctx, mainApp.mainCancel = ctx, mainCancel
+	mainApp.logChan = make(chan *logrus.Entry, 5)
+	log.AddHook(mainApp)
+	go mainApp.processLogMessages()
 	mainApp.previewChan = make(chan MonkeyPreview, 4)
 	mainApp.mainDoneChan = make(chan struct{})
 	mainApp.statDeltas = make(chan Stats, 20)
@@ -139,6 +166,9 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	}
 	flexBox.AddItem(body, 0, 3, false)
 
+	logging := cview.NewTextView()
+	flexBox.AddItem(logging, 0, 3, true)
+	mainApp.logview = logging
 	footer := cview.NewFlex()
 	speed := cview.NewTextView()
 	speed.SetTextAlign(cview.AlignRight)
@@ -158,7 +188,6 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 
 	mainApp.app.SetInputCapture(captureHandler)
 
-	mainApp.ctx, mainApp.mainCancel = ctx, mainCancel
 	mainApp.runtimeStats.started = time.Now()
 	return mainApp
 }
@@ -232,7 +261,7 @@ func (m *MainApp) processPreviews() {
 			// another
 			wg := new(sync.WaitGroup)
 			wg.Add(1)
-			logrus.Infof("Previewing %s", monkeyPreview.Title)
+			logrus.Debug("Previewing %s", monkeyPreview.Title)
 			m.app.QueueUpdateDraw(func() { wg.Done() }, imageBox)
 			wg.Wait()
 		}

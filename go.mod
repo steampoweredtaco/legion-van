@@ -14,6 +14,7 @@ require (
 	github.com/go-chi/render v1.0.1
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/golang/glog v0.0.0-20210429001901-424d2337a529
+	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b // indirect
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/sirupsen/logrus v1.8.1
 	github.com/ugorji/go/codec v1.2.6

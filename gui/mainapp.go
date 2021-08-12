@@ -97,8 +97,10 @@ func (a *MainApp) UpdateTotal() {
 	totalFound := atomic.LoadUint64(&a.runtimeStats.Found)
 	total := atomic.LoadUint64(&a.runtimeStats.Total)
 	totalRequests := atomic.LoadUint64(&a.runtimeStats.TotalRequests)
-
-	statText := fmt.Sprintf("raid parties: %.d raided: %d. looted: %d.", totalRequests, total, totalFound)
+	deadline, _ := a.ctx.Deadline()
+	until := time.Until(deadline)
+	statText := fmt.Sprintf("time left %s. raid parties: %d. raided: %d. looted: %d.",
+		until.Round(time.Second), totalRequests, total, totalFound)
 	a.total.SetText(statText)
 	a.app.QueueUpdateDraw(func() {}, a.total)
 }
@@ -129,7 +131,13 @@ func (a *MainApp) Fire(entry *logrus.Entry) error {
 
 func (a *MainApp) processLogMessages() {
 	for entry := range a.logChan {
-		msg := fmt.Sprintf("[%s]: %s", strings.ToUpper(entry.Level.String()), entry.Message)
+		var msg string
+		if entry.Level == logrus.InfoLevel {
+			msg = entry.Message
+		} else {
+			msg = fmt.Sprintf("[%s]: %s", strings.ToUpper(entry.Level.String()), entry.Message)
+		}
+
 		a.app.QueueUpdateDraw(func() {
 			fmt.Fprintln(a.logview, msg)
 			a.logview.ScrollToEnd()
@@ -208,7 +216,7 @@ func (mainApp *MainApp) Done() <-chan struct{} {
 // because mainApp is responsible for shutting down the gui sender chans, such as preview, that
 // the main app controls the lifetime of.
 func (mainApp *MainApp) MainHasShutdown() {
-	logrus.Info("Notifed main has shutdown")
+	logrus.Debug("notified main has shutdown")
 	mChan := mainApp.mainDoneChan
 	mChan <- struct{}{}
 	close(mChan)
@@ -220,7 +228,7 @@ func (mainApp *MainApp) ForceQuit() {
 
 func (m *MainApp) Quit() {
 	// notify all users of the gui before shutting down the gui
-	logrus.Info("Canceling main")
+	logrus.Debug("canceling main")
 	m.mainCancel()
 	// Cannot cleanup send channels from main until verification that main is done using them
 main:
@@ -236,9 +244,9 @@ main:
 		}
 
 	}
-	logrus.Info("Closing channel")
+	logrus.Debug("closing channel")
 	close(m.previewChan)
-	logrus.Info("Sending gui queue to stop qui")
+	logrus.Debug("sending gui queue to stop qui")
 	m.app.QueueUpdate(func() { m.app.Stop() })
 
 }
@@ -261,7 +269,7 @@ func (m *MainApp) processPreviews() {
 			// another
 			wg := new(sync.WaitGroup)
 			wg.Add(1)
-			logrus.Debug("Previewing %s", monkeyPreview.Title)
+			logrus.Debugf("Previewing %s", monkeyPreview.Title)
 			m.app.QueueUpdateDraw(func() { wg.Done() }, imageBox)
 			wg.Wait()
 		}

@@ -8,6 +8,7 @@ import (
 	"image"
 	"io"
 	"io/ioutil"
+	mrand "math/rand"
 	"net/http"
 	"os"
 	"path"
@@ -48,6 +49,7 @@ var config struct {
 	Format         targetFormat  `long:"image_format" description:"Set the target image format for saving monkey found in options are svg or png. svg is faster" default:"png" choice:"png" choice:"svg"`
 	BatchSize      uint          `long:"batch_size" description:"Number of monkeys to test per batch request, higher or lower may affect performance" default:"2500"`
 	Debug          bool          `long:"debug" description:"Changes logging and makes terminal virtual for debugging issues."`
+	VerboseLog     bool          `long:"verbose" description:"Changes logging to print debug."`
 	MonkeyServer   string        `long:"monkey_api" description:"To change the backend monkey server, defaults to the official one." default:"https://monkey.banano.cc"`
 }
 
@@ -329,7 +331,7 @@ main:
 		// Exit early there are web errors and then the app shutsdown
 		select {
 		case <-ctx.Done():
-			log.Infof("stopping the %s raid.", raidName)
+			log.Debugf("stopping the %s raid.", raidName)
 			break main
 		default:
 		}
@@ -340,13 +342,21 @@ main:
 
 		request, err := http.NewRequestWithContext(ctx, "POST", getStatsURL, jsonReader)
 		if err != nil {
-			log.Errorf("Could not get monkey stats %s", err)
+			select {
+			case <-ctx.Done():
+			default:
+				log.Errorf("could not get monkey stats %s", err)
+			}
 			continue
 		}
 		request.Header.Set("Content-Type", "application/json")
 		response, err := httpClient.Do(request)
 		if err != nil {
-			log.Errorf("Could not get monkey stats %s", err)
+			select {
+			case <-ctx.Done():
+			default:
+				log.Errorf("could not get monkey stats %s", err)
+			}
 			continue
 		} else {
 			defer response.Body.Close()
@@ -361,7 +371,8 @@ main:
 		results := make(map[string]MonkeyStats)
 		err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
 		if err != nil {
-			log.Warningf("could not unmarshal response: %s", err)
+			// These are gonna be a coding error or caused by the context deadline so only have tese for debuging.
+			log.Debugf("could not unmarshal response: %s %T", err, err)
 			continue
 		}
 
@@ -377,7 +388,7 @@ main:
 		for _, monkey := range monKeys {
 			select {
 			case <-ctx.Done():
-				log.Infof("stopping the %s raid.", raidName)
+				log.Debugf("stopping the %s raid.", raidName)
 				break main
 			default:
 				totalCount++
@@ -430,7 +441,7 @@ func outputMonkeyData(ctx context.Context, targetDir string, targetFormat string
 		select {
 		case monkey = <-monkeyDataChan:
 		case <-ctx.Done():
-			log.Infof("Stopping some monKey's looting.")
+			log.Debugf("Stopping some monKey's looting.")
 			return
 		}
 
@@ -506,7 +517,7 @@ func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, m
 			}
 
 		case <-ctx.Done():
-			log.Info("stopping the monKey preview")
+			log.Debugf("stopping the monKey preview")
 			return
 		}
 	}
@@ -591,8 +602,12 @@ func setupLog() io.Closer {
 	if config.Debug {
 		writer = io.MultiWriter(logFile, stdOutWriter)
 		log.SetOutput(writer)
+		log.SetLevel(log.DebugLevel)
 	} else {
 		log.SetOutput(logFile)
+	}
+	if config.VerboseLog {
+		log.SetLevel(log.DebugLevel)
 	}
 	return logFile
 }
@@ -686,7 +701,6 @@ func main() {
 		for {
 			select {
 			case <-ctx.Done():
-				log.Info("Failing Monkeygedon")
 				break main
 			case monkeyName, ok := <-monkeyNameChan:
 				if !ok {
@@ -703,6 +717,12 @@ func main() {
 		wgProccessDisplayAndNameChan.Wait()
 		close(monkeyNameChan)
 		PNGPreviewChanWG.Wait()
+		// Logging to gui can be out of order but these lines should be serial
+		log.Infof("Raiding time up for looting them vain monKeys\nFind your monKeys and their wallets at %s\nESC to quit.", targetDir)
+		mrand.Seed(time.Now().UnixNano())
+		if mrand.Intn(100) == 42 {
+			log.Info("wen poem?")
+		}
 	}()
 
 	go http.ListenAndServe(":8888", nil)

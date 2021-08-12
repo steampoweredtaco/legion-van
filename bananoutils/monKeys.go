@@ -21,6 +21,9 @@ func ChangeMonkeyServer(URL string) {
 
 func GrabMonkey(ctx context.Context, publicAddr Account, format legion.ImageFormat) (io.Reader, error) {
 	var addressBuilder strings.Builder
+	if string(publicAddr) == "" {
+		return nil, fmt.Errorf("cannot grab a monkey from an empty address")
+	}
 	addressBuilder.WriteString(monkeyBase + "/api/v1/monkey/")
 	addressBuilder.WriteString(string(publicAddr))
 	// svg is friendlier on the server, so do conversion if needed client side

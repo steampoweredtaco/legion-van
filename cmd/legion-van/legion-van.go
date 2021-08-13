@@ -51,6 +51,7 @@ var config struct {
 	Debug          bool          `long:"debug" description:"Changes logging and makes terminal virtual for debugging issues."`
 	VerboseLog     bool          `long:"verbose" description:"Changes logging to print debug."`
 	MonkeyServer   string        `long:"monkey_api" description:"To change the backend monkey server, defaults to the official one." default:"https://monkey.banano.cc"`
+	NumOfThreads   int           `long:"threads" description:"Changes number of threads to use, defaults to 2, with a decent machine this is probably all you need. Set to -1 for all hardware cpu threads available." default:"2"`
 }
 
 var filter struct {
@@ -660,7 +661,7 @@ func main() {
 	defer logFile.Close()
 	setupHttp()
 
-	log.Infof("Using %d cpus", runtime.GOMAXPROCS(-1))
+	log.Infof("Using %d cpus", runtime.GOMAXPROCS(config.NumOfThreads))
 	legionImage.Init()
 	defer legionImage.Destroy()
 

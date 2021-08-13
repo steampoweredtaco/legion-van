@@ -186,7 +186,7 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	total.SetTextAlign(cview.AlignLeft)
 	total.SetText("readying the hordes")
 	mainApp.total = total
-	footer.AddItem(total, 0, 1, false)
+	footer.AddItem(total, 0, 3, false)
 	footer.AddItem(speed, 0, 1, false)
 	flexBox.AddItem(footer, 1, 0, false)
 	mainApp.app.SetRoot(flexBox, true)

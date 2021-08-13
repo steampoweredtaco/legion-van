@@ -266,64 +266,78 @@ func main() {
 	logFile := setupLog()
 	defer logFile.Close()
 	setupHttp()
-
-	log.Infof("Using %d cpus", runtime.GOMAXPROCS(config.NumOfThreads))
 	legionImage.Init()
 	defer legionImage.Destroy()
 
+	log.Infof("Using %d cpus", runtime.GOMAXPROCS(config.NumOfThreads))
+
 	targetDir := setupOutputDir()
+	backgroundCtx := context.Background()
+	guiCtx, guiCancel := context.WithCancel(backgroundCtx)
+	mainCtx, mainCancel := context.WithTimeout(backgroundCtx, config.HowLongToRun)
+	guiInstance := setupGui(guiCtx, mainCancel)
 
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, config.HowLongToRun)
-	guiInstance := setupGui(ctx, cancel)
-
-	finishedChan := make(chan struct{})
-	defer close(finishedChan)
-
+	var writeWG sync.WaitGroup
 	go func() {
-		defer guiInstance.MainHasShutdown()
-		monkeyDataChan := make(chan engine.MonkeyStats, 1000)
-		wgMonkeyDataChan := new(sync.WaitGroup)
 
-		monkeyNameChan := make(chan string, 100)
-		monkeyDisplayChan := make(chan engine.MonkeyStats, 10)
-		wgProccessDisplayAndNameChan := new(sync.WaitGroup)
-
-		// required to finish before closing out the main gui
-		PNGPreviewChanWG := new(sync.WaitGroup)
-
+		monkeyFunnelChan := make(chan engine.MonkeyStats, 1000*config.MaxRequests)
 		for i := uint(0); i < config.MaxRequests; i++ {
-			wgMonkeyDataChan.Add(1)
-			go engine.GenerateAndFilterMonkees(ctx, config.BatchSize, monkeyDataChan, guiInstance.TotalDeltaChan(), filter, wgMonkeyDataChan)
-			wgProccessDisplayAndNameChan.Add(1)
-			go engine.ProcessMonkeyData(ctx, targetDir, string(config.Format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProccessDisplayAndNameChan)
-		}
-		PNGPreviewChanWG.Add(4)
-		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
-		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
-		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
-		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
-		var monkeyHeadCount uint64
-	main:
-		for {
-			select {
-			case <-ctx.Done():
-				break main
-			case monkeyName, ok := <-monkeyNameChan:
-				if !ok {
-					break main
+
+			go func() {
+				monkeyStatChan, statsDelta := engine.GenerateAndFilterMonkees(mainCtx, config.BatchSize, filter)
+				for {
+					select {
+					case monkey, ok := <-monkeyStatChan:
+						if !ok {
+							monkeyStatChan = nil
+							continue
+						}
+						log.Infof("Say hi to %s", monkey.SillyName)
+						monkeyFunnelChan <- monkey
+
+					case stats, ok := <-statsDelta:
+						if !ok {
+							statsDelta = nil
+							continue
+						}
+						guiInstance.UpdateStats(stats)
+					}
 				}
-				monkeyHeadCount++
-				log.Infof("Say hi to %s", monkeyName)
+			}()
+
+			monkeyDisplayChan := make(chan engine.MonkeyStats, 1000*config.MaxRequests)
+			monkeyWriteDataChan := make(chan engine.MonkeyStats, 1000*config.MaxRequests)
+			go func() {
+				for {
+					select {
+					case <-mainCtx.Done():
+						// Finishing all writes is important
+						close(monkeyWriteDataChan)
+						return
+					case monkey := <-monkeyFunnelChan:
+						monkeyWriteDataChan <- monkey
+						monkeyDisplayChan <- monkey
+					}
+				}
+			}()
+
+			for i := 0; i < 10; i++ {
+				writeWG.Add(1)
+				go func() {
+					engine.OutputMonkeyData(targetDir, config.Format.String(), monkeyWriteDataChan)
+					writeWG.Done()
+				}()
 			}
+
+			go gui.PreviewMonkeys(guiInstance.PNGPreviewChan(), monkeyDisplayChan)
+			go gui.PreviewMonkeys(guiInstance.PNGPreviewChan(), monkeyDisplayChan)
+			go gui.PreviewMonkeys(guiInstance.PNGPreviewChan(), monkeyDisplayChan)
+
 		}
-		log.Infof("Total monKeys confirmed alive %d", monkeyHeadCount)
-		log.Info("Waiting for pending writes and network queries to close...there may be more survivors on the lifeboat")
-		wgMonkeyDataChan.Wait()
-		close(monkeyDataChan)
-		wgProccessDisplayAndNameChan.Wait()
-		close(monkeyNameChan)
-		PNGPreviewChanWG.Wait()
+		<-mainCtx.Done()
+		log.Infof("Total monKeys confirmed alive %d", guiInstance.GetTotalStat())
+		log.Info("Waiting for pending writes.")
+		writeWG.Wait()
 		// Logging to gui can be out of order but these lines should be serial
 		log.Infof("Raiding time up for looting them vain monKeys\nFind your monKeys and their wallets at %s\nESC to quit.", targetDir)
 		mrand.Seed(time.Now().UnixNano())
@@ -333,5 +347,7 @@ func main() {
 	}()
 
 	go http.ListenAndServe(":8888", nil)
-	guiInstance.Run()
+	deadline, _ := mainCtx.Deadline()
+	_ = guiCancel
+	guiInstance.Run(deadline)
 }

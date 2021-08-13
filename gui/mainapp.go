@@ -36,9 +36,13 @@ type MainApp struct {
 	previewChan  chan MonkeyPreview
 	log          *logrus.Logger
 	previewWG    *sync.WaitGroup
-	mainDoneChan chan struct{}
 	statDeltas   chan engine.Stats
 	once         sync.Once
+	endTime      time.Time
+}
+
+func (a *MainApp) GetTotalStat() uint64 {
+	return atomic.LoadUint64(&a.runtimeStats.Total)
 }
 
 func (a *MainApp) UpdateStats(stats engine.Stats) {
@@ -91,8 +95,7 @@ func (a *MainApp) UpdateTotal() {
 	totalFound := atomic.LoadUint64(&a.runtimeStats.Found)
 	total := atomic.LoadUint64(&a.runtimeStats.Total)
 	totalRequests := atomic.LoadUint64(&a.runtimeStats.TotalRequests)
-	deadline, _ := a.ctx.Deadline()
-	until := time.Until(deadline)
+	until := time.Until(a.endTime)
 	statText := fmt.Sprintf("time left %s. raid parties: %d. raided: %d. looted: %d.",
 		until.Round(time.Second), totalRequests, total, totalFound)
 	a.total.SetText(statText)
@@ -105,11 +108,22 @@ func (a *MainApp) SetTerminalScreen(s tcell.Screen) {
 
 // PNGPreviewChan is a channel png images can be piped to and they
 // will go to the appropriate preivew panes.
-func (a *MainApp) PNGPreviewChan() chan<- MonkeyPreview {
+func (a *MainApp) PNGPreviewChan() (monkeyPreviewChan chan<- MonkeyPreview) {
 	if a.previewChan == nil {
 		panic("gui isn't initialized")
 	}
-	return a.previewChan
+
+	resultMonkeyChan := make(chan MonkeyPreview)
+	monkeyPreviewChan = resultMonkeyChan
+	go func() {
+		select {
+		case preview := <-resultMonkeyChan:
+			a.previewChan <- preview
+		case <-a.ctx.Done():
+			close(a.previewChan)
+		}
+	}()
+	return
 }
 
 func (a *MainApp) Levels() []logrus.Level {
@@ -146,7 +160,6 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	log.AddHook(mainApp)
 	go mainApp.processLogMessages()
 	mainApp.previewChan = make(chan MonkeyPreview, 4)
-	mainApp.mainDoneChan = make(chan struct{})
 	mainApp.statDeltas = make(chan engine.Stats, 20)
 	if log != nil {
 		mainApp.log = log
@@ -205,17 +218,6 @@ func (mainApp *MainApp) Done() <-chan struct{} {
 	return mainApp.ctx.Done()
 }
 
-// MainHasShtudown notifies the gui that the main app and use of any sender channels from
-// the mainapp are not in use any longer.  This is required before the Quit methods will work
-// because mainApp is responsible for shutting down the gui sender chans, such as preview, that
-// the main app controls the lifetime of.
-func (mainApp *MainApp) MainHasShutdown() {
-	logrus.Debug("notified main has shutdown")
-	mChan := mainApp.mainDoneChan
-	mChan <- struct{}{}
-	close(mChan)
-}
-
 func (mainApp *MainApp) ForceQuit() {
 	mainApp.app.QueueUpdate(func() { mainApp.app.Stop() })
 }
@@ -228,13 +230,12 @@ func (m *MainApp) Quit() {
 main:
 	for {
 		deadline := time.NewTimer(time.Second * 10)
-		mainDoneChan := m.mainDoneChan
 		select {
-		case <-mainDoneChan:
-			logrus.Info("Shutting down main gui after main app has reported done")
+		case <-m.ctx.Done():
+			logrus.Debug("Shutting down main gui as requested.")
 			break main
 		case <-deadline.C:
-			logrus.Info("tick")
+			logrus.Debug("tick")
 		}
 
 	}
@@ -281,22 +282,17 @@ func (m *MainApp) cleanupGui() {
 	m.previewWG.Wait()
 }
 
-func (m *MainApp) Run() {
+func (m *MainApp) Run(endTime time.Time) {
+	m.endTime = endTime
 	m.listenForPreviews()
-	go func(doneChan <-chan struct{}) {
+	go func() {
 		ticker := time.NewTicker(time.Second)
 		for {
-			select {
-			case <-ticker.C:
-				m.UpdateSpeed()
-				m.UpdateTotal()
-			case delta := <-m.statDeltas:
-				m.UpdateStats(delta)
-			case <-doneChan:
-				return
-			}
+			<-ticker.C
+			m.UpdateSpeed()
+			m.UpdateTotal()
 		}
-	}(m.mainDoneChan)
+	}()
 
 	m.app.Run()
 	m.cleanupGui()

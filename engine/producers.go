@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"path"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Pallinder/go-randomdata"
@@ -19,104 +18,93 @@ import (
 	"github.com/ugorji/go/codec"
 )
 
-func GenerateAndFilterMonkees(ctx context.Context, monkeysPerRequest uint, monkeyChan chan<- MonkeyStats, deltaChan chan<- Stats, filter CmdLineFilter, wg *sync.WaitGroup) {
-	defer wg.Done()
-	wg.Add(1)
-	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, deltaChan, filter, wg)
-}
-
-func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, deltaChan chan<- Stats, filter CmdLineFilter, wg *sync.WaitGroup) {
-	defer wg.Done()
+func fetchManyMonkies(ctx context.Context, amount uint) (monKeys []MonkeyStats) {
 	getStatsURL := bananoutils.GetMonkeyDescriptionURI()
+	wallets := generateManyWallets(amount)
+	jsonBody := make(map[string][]string)
+	jsonBody["addresses"] = wallets.getAccounts()
+	jsonReader := wallets.encodeAccountsAsJSON()
+
+	request, err := http.NewRequestWithContext(ctx, "POST", getStatsURL, jsonReader)
+	if err != nil {
+		select {
+		case <-ctx.Done():
+		default:
+			log.Errorf("could not get monkey stats %s", err)
+		}
+		return
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+	response, err := httpClient.Do(request)
+	if err != nil {
+		select {
+		case <-ctx.Done():
+		default:
+			log.Errorf("could not get monkey stats %s", err)
+		}
+		return
+	} else {
+		defer response.Body.Close()
+	}
+
+	if response.StatusCode != 200 {
+		log.Warningf("non 200 error returned (%d %s) sleeping 10 seconds cause server is probably loaded", response.StatusCode, response.Status)
+		time.Sleep(time.Second * 10)
+		return
+	}
+
+	results := make(map[string]MonkeyStats)
+	err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
+	if err != nil {
+		// These are gonna be a coding error or caused by the context deadline so only have tese for debuging.
+		log.Debugf("could not unmarshal response: %s %T", err, err)
+		return
+	}
+
+	monKeys = make([]MonkeyStats, 0, amount)
+	for address, monkey := range results {
+		monKeys = append(monKeys, monkey)
+		monKeys[len(monKeys)-1].PublicAddress = address
+		monKeys[len(monKeys)-1].PrivateKey = wallets.lookupWalletSeed(address)
+	}
+	return
+}
+func GenerateAndFilterMonkees(ctx context.Context, monkeysPerRequest uint, filter CmdLineFilter) (monkeyStatsRecieve <-chan MonkeyStats, deltaStatsRecieve <-chan Stats) {
+	monkeyStatsChan := make(chan MonkeyStats, 1000)
+	deltaStatsChan := make(chan Stats, 5)
+	defer close(monkeyStatsChan)
+	defer close(deltaStatsChan)
+	monkeyStatsRecieve = monkeyStatsChan
+	deltaStatsRecieve = deltaStatsChan
+
 	var totalCount uint64
 	var survivorCount uint64
 	raidName := strings.Title(randomdata.Adjective() + " " + randomdata.Noun())
 
 	log.Infof("Raiding with %s clan", raidName)
-main:
 	for {
-
-		// Exit early there are web errors and then the app shutsdown
-		select {
-		case <-ctx.Done():
-			log.Debugf("stopping the %s raid.", raidName)
-			break main
-		default:
-		}
-		wallets := generateManyWallets(monkeysPerRequest)
-		jsonBody := make(map[string][]string)
-		jsonBody["addresses"] = wallets.getAccounts()
-		jsonReader := wallets.encodeAccountsAsJSON()
-
-		request, err := http.NewRequestWithContext(ctx, "POST", getStatsURL, jsonReader)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-			default:
-				log.Errorf("could not get monkey stats %s", err)
-			}
-			continue
-		}
-		request.Header.Set("Content-Type", "application/json")
-		response, err := httpClient.Do(request)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-			default:
-				log.Errorf("could not get monkey stats %s", err)
-			}
-			continue
-		} else {
-			defer response.Body.Close()
-		}
-
-		if response.StatusCode != 200 {
-			log.Warningf("non 200 error returned (%d %s) sleeping 10 seconds cause server is probably loaded", response.StatusCode, response.Status)
-			time.Sleep(time.Second * 10)
-			continue
-		}
-
-		results := make(map[string]MonkeyStats)
-		err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
-		if err != nil {
-			// These are gonna be a coding error or caused by the context deadline so only have tese for debuging.
-			log.Debugf("could not unmarshal response: %s %T", err, err)
-			continue
-		}
-
-		monKeys := make([]MonkeyStats, 0, monkeysPerRequest)
-		for address, monkey := range results {
-			monKeys = append(monKeys, monkey)
-			monKeys[len(monKeys)-1].PublicAddress = address
-			monKeys[len(monKeys)-1].PrivateKey = wallets.lookupWalletSeed(address)
-		}
-
 		var totalDelta uint64
 		var survivorDelta uint64
-		for _, monkey := range monKeys {
-			select {
-			case <-ctx.Done():
-				log.Debugf("stopping the %s raid.", raidName)
-				break main
-			default:
-				totalCount++
-				totalDelta++
-				if matchFilters(monkey, filter) {
-					survivorCount++
-					survivorDelta++
-					select {
-					case monkeySendChan <- monkey:
-					case <-ctx.Done():
-					}
+		for _, monkey := range fetchManyMonkies(ctx, monkeysPerRequest) {
+			totalCount++
+			totalDelta++
+			if matchFilters(monkey, filter) {
+				survivorCount++
+				survivorDelta++
+				select {
+				case <-ctx.Done():
+					log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
+					return
+				case monkeyStatsChan <- monkey:
 				}
 			}
 		}
-		deltaChan <- Stats{Total: totalDelta, TotalRequests: 1, Found: survivorDelta}
+		deltaStatsChan <- Stats{Total: totalDelta, TotalRequests: 1, Found: survivorDelta}
 	}
-	log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
 }
 
-func outputMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats) {
+func OutputMonkeyData(targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats) {
 
 	var convert func(svg io.Reader) (io.Reader, error)
 	extension := "." + strings.ToLower(targetFormat)
@@ -144,16 +132,11 @@ func outputMonkeyData(ctx context.Context, targetDir string, targetFormat string
 	}
 
 	for {
-
-		var monkey MonkeyStats
-		select {
-		case monkey = <-monkeyDataChan:
-		case <-ctx.Done():
-			log.Debugf("Stopping some monKey's looting.")
+		monkey, ok := <-monkeyDataChan
+		if !ok {
 			return
 		}
-
-		monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
+		monkeySVG, err := bananoutils.GrabMonkey(context.Background(), bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
 		if err != nil {
 			log.Warnf("lost a monkey %s", err)
 			continue

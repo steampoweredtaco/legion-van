@@ -15,18 +15,12 @@ import (
 	"code.rocketnine.space/tslocum/cview"
 	"github.com/gdamore/tcell/v2"
 	"github.com/sirupsen/logrus"
+	"github.com/steampoweredtaco/legion-van/engine"
 )
 
 type MonkeyPreview struct {
 	Image image.Image
 	Title string
-}
-
-type Stats struct {
-	Total         uint64
-	Found         uint64
-	TotalRequests uint64
-	started       time.Time
 }
 
 type MainApp struct {
@@ -35,7 +29,7 @@ type MainApp struct {
 	total        *cview.TextView
 	logview      *cview.TextView
 	logChan      chan *logrus.Entry
-	runtimeStats Stats
+	runtimeStats engine.Stats
 	ctx          context.Context
 	mainCancel   context.CancelFunc
 	preview      [4]*imageBox
@@ -43,17 +37,17 @@ type MainApp struct {
 	log          *logrus.Logger
 	previewWG    *sync.WaitGroup
 	mainDoneChan chan struct{}
-	statDeltas   chan Stats
+	statDeltas   chan engine.Stats
 	once         sync.Once
 }
 
-func (a *MainApp) UpdateStats(stats Stats) {
+func (a *MainApp) UpdateStats(stats engine.Stats) {
 	a.UpdateTotalStat(stats.Total)
 	a.UpdateFoundStat(stats.Found)
 	a.UpdateTotalRequestsStat(stats.TotalRequests)
 }
 
-func (a *MainApp) TotalDeltaChan() chan<- Stats {
+func (a *MainApp) TotalDeltaChan() chan<- engine.Stats {
 	return a.statDeltas
 }
 func (a *MainApp) SetPreview(index int, img image.Image, title string) {
@@ -83,7 +77,7 @@ func (a *MainApp) UpdateTotalRequestsStat(additional uint64) {
 
 func (a *MainApp) UpdateSpeed() {
 	total := atomic.LoadUint64(&a.runtimeStats.Total)
-	duration := time.Since(a.runtimeStats.started)
+	duration := time.Since(a.runtimeStats.Started)
 	if duration == 0 {
 		a.speed.SetText("they've gone deplaid")
 	}
@@ -153,7 +147,7 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	go mainApp.processLogMessages()
 	mainApp.previewChan = make(chan MonkeyPreview, 4)
 	mainApp.mainDoneChan = make(chan struct{})
-	mainApp.statDeltas = make(chan Stats, 20)
+	mainApp.statDeltas = make(chan engine.Stats, 20)
 	if log != nil {
 		mainApp.log = log
 	}
@@ -196,7 +190,7 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 
 	mainApp.app.SetInputCapture(captureHandler)
 
-	mainApp.runtimeStats.started = time.Now()
+	mainApp.runtimeStats.Started = time.Now()
 	return mainApp
 }
 

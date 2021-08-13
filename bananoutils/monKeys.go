@@ -19,6 +19,14 @@ func ChangeMonkeyServer(URL string) {
 	monkeyBase = URL
 }
 
+func GetMonkeyServer() string {
+	return monkeyBase
+}
+
+func GetMonkeyDescriptionURI() string {
+	return fmt.Sprintf("%s/api/v1/monkey/dtl", monkeyBase)
+}
+
 func GrabMonkey(ctx context.Context, publicAddr Account, format legion.ImageFormat) (io.Reader, error) {
 	var addressBuilder strings.Builder
 	if string(publicAddr) == "" {

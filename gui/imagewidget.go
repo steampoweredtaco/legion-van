@@ -11,7 +11,7 @@ import (
 
 const (
 	// width/height of a standard console character
-	defaultConsolePicRation = float64(3 / 7)
+	defaultConsolePicRation = float64(3) / float64(7)
 )
 
 type imageBox struct {

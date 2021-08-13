@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"image"
 	"io"
-	"io/ioutil"
 	mrand "math/rand"
 	"net/http"
 	"os"
@@ -20,15 +16,13 @@ import (
 
 	_ "net/http/pprof"
 
-	"github.com/Pallinder/go-randomdata"
-	"github.com/bbedward/nano/address"
 	"github.com/gdamore/tcell/v2"
 	"github.com/jessevdk/go-flags"
 	log "github.com/sirupsen/logrus"
 	"github.com/steampoweredtaco/legion-van/bananoutils"
+	"github.com/steampoweredtaco/legion-van/engine"
 	"github.com/steampoweredtaco/legion-van/gui"
 	legionImage "github.com/steampoweredtaco/legion-van/image"
-	"github.com/ugorji/go/codec"
 )
 
 func (*targetFormat) String() string {
@@ -54,16 +48,7 @@ var config struct {
 	NumOfThreads   int           `long:"threads" description:"Changes number of threads to use, defaults to 2, with a decent machine this is probably all you need. Set to -1 for all hardware cpu threads available." default:"2"`
 }
 
-var filter struct {
-	HelpVanity bool     `long:"help-vanity" short:"V"`
-	Hat        []string `short:"H" description:"hat option. See --help-vanity for list"`
-	Glasses    []string `short:"G" description:"glasses option. See --help-vanity for list"`
-	Mouth      []string `short:"O" description:"mouth option. See --help-vanity for list"`
-	Cloths     []string `short:"C" description:"cloths option. See --help-vanity for list"`
-	Feet       []string `short:"F" description:"feet option. See --help-vanity for list"`
-	Tail       []string `short:"T" description:"tail option. See --help-vanity for list"`
-	Misc       []string `short:"M" description:"misc  option. See --help-vanity for list"`
-}
+var filter engine.CmdLineFilter
 
 func printVanityFilterUsage() {
 	usage := `
@@ -196,397 +181,18 @@ func parseFlags() {
 
 }
 
-var (
-	jsonHandler = new(codec.JsonHandle)
-)
-
-var (
-	httpTransport *http.Transport
-	httpClient    *http.Client
-)
-
-func GenerateAddress() string {
-	pub, _ := address.GenerateKey()
-	return strings.Replace(string(address.PubKeyToAddress(pub)), "nano_", "ban_", -1)
-}
-
-type MonkeyBase struct {
-	PublicAddress   string
-	PrivateKey      string
-	BackgroundColor string `json:"background_color"`
-	Glasses         string `json:"glasses"`
-	Hat             string `json:"hat"`
-	Misc            string `json:"misc"`
-	Mouth           string `json:"mouth"`
-	ShirtPants      string `json:"shirt_pants"`
-	Shoes           string `json:"shoes"`
-	Tail            string `json:"tail_accessory"`
-	SillyName       string `json:"silly_name"`
-}
-
-type MonkeyStats struct {
-	MonkeyBase
-	Additional map[string]interface{}
-}
-
-func (monkey *MonkeyStats) UnmarshalJSON(data []byte) (err error) {
-	monkey.Additional = make(map[string]interface{})
-	err = codec.NewDecoderBytes(data, jsonHandler).Decode(&monkey.Additional)
-	if err != nil {
-		return fmt.Errorf("could not parse monkeystat: %w", err)
-	}
-	err = json.Unmarshal(data, &monkey.MonkeyBase)
-	if err != nil {
-		return fmt.Errorf("could not parse monkeystat main monkey: %w", err)
-	}
-	monkey.SillyName = randomdata.SillyName()
-	return
-}
-
-func (monkey MonkeyStats) MarshalJSON() ([]byte, error) {
-	monkey.Additional["public_address"] = monkey.PublicAddress
-	monkey.Additional["private_key"] = monkey.PrivateKey
-	data := make([]byte, 1000)
-	err := codec.NewEncoderBytes(&data, jsonHandler).Encode(&monkey.Additional)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
-}
-
-type walletsDB struct {
-	publicAccounts              []string
-	publicAccountToWalletLookup map[string]string
-}
-
-func generateManyWallets(amount uint) walletsDB {
-	var accountsToWalletKey = make(map[string]string, amount)
-	accounts := make([]string, 0, amount)
-
-	for i := uint(0); i < amount; i++ {
-		privateWalletSeed, publicAccount, err := bananoutils.GeneratePrivateKeyAndFirstPublicAddress()
-		if err != nil {
-			panic(err)
-		}
-		publicAccountStr := string(publicAccount)
-
-		accountsToWalletKey[publicAccountStr] = privateWalletSeed
-		accounts = append(accounts, publicAccountStr)
-	}
-	return walletsDB{publicAccounts: accounts, publicAccountToWalletLookup: accountsToWalletKey}
-}
-
-func (db walletsDB) getAccounts() []string {
-	return db.publicAccounts
-}
-
-func (db walletsDB) lookupWalletSeed(publicAddress string) string {
-	return db.publicAccountToWalletLookup[publicAddress]
-}
-
-func (db walletsDB) encodeAccountsAsJSON() io.Reader {
-	data := make([]byte, len(db.publicAccounts)*64)
-	jsonStruct := make(map[string][]string)
-	jsonStruct["addresses"] = db.publicAccounts
-	err := codec.NewEncoderBytes(&data, jsonHandler).Encode(jsonStruct)
-	if err != nil {
-		log.Fatalf("could not marshal addresses for request %s", err)
-	}
-	return bytes.NewBuffer(data)
-}
-
-func fitlerMatchAny(options []string, s string) bool {
-	// filters always match empty options
-	if len(options) == 0 {
-		return true
-	}
-	for _, prefix := range options {
-		if strings.HasPrefix(s, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchFilters(monkey MonkeyStats) bool {
-	return fitlerMatchAny(filter.Misc, monkey.Misc) &&
-		fitlerMatchAny(filter.Cloths, monkey.ShirtPants) &&
-		fitlerMatchAny(filter.Feet, monkey.Shoes) &&
-		fitlerMatchAny(filter.Glasses, monkey.Glasses) &&
-		fitlerMatchAny(filter.Hat, monkey.Hat) &&
-		fitlerMatchAny(filter.Mouth, monkey.Mouth) &&
-		fitlerMatchAny(filter.Tail, monkey.Tail)
-
-}
-func getMonkeyData(ctx context.Context, monkeysPerRequest uint, monkeySendChan chan<- MonkeyStats, deltaChan chan<- gui.Stats, wg *sync.WaitGroup) {
-	defer wg.Done()
-	getStatsURL := fmt.Sprintf("%s/api/v1/monkey/dtl", config.MonkeyServer)
-	var totalCount uint64
-	var survivorCount uint64
-	raidName := strings.Title(randomdata.Adjective() + " " + randomdata.Noun())
-
-	log.Infof("Raiding with %s clan", raidName)
-main:
-	for {
-
-		// Exit early there are web errors and then the app shutsdown
-		select {
-		case <-ctx.Done():
-			log.Debugf("stopping the %s raid.", raidName)
-			break main
-		default:
-		}
-		wallets := generateManyWallets(monkeysPerRequest)
-		jsonBody := make(map[string][]string)
-		jsonBody["addresses"] = wallets.getAccounts()
-		jsonReader := wallets.encodeAccountsAsJSON()
-
-		request, err := http.NewRequestWithContext(ctx, "POST", getStatsURL, jsonReader)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-			default:
-				log.Errorf("could not get monkey stats %s", err)
-			}
-			continue
-		}
-		request.Header.Set("Content-Type", "application/json")
-		response, err := httpClient.Do(request)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-			default:
-				log.Errorf("could not get monkey stats %s", err)
-			}
-			continue
-		} else {
-			defer response.Body.Close()
-		}
-
-		if response.StatusCode != 200 {
-			log.Warningf("non 200 error returned (%d %s) sleeping 10 seconds cause server is probably loaded", response.StatusCode, response.Status)
-			time.Sleep(time.Second * 10)
-			continue
-		}
-
-		results := make(map[string]MonkeyStats)
-		err = codec.NewDecoder(response.Body, jsonHandler).Decode(&results)
-		if err != nil {
-			// These are gonna be a coding error or caused by the context deadline so only have tese for debuging.
-			log.Debugf("could not unmarshal response: %s %T", err, err)
-			continue
-		}
-
-		monKeys := make([]MonkeyStats, 0, monkeysPerRequest)
-		for address, monkey := range results {
-			monKeys = append(monKeys, monkey)
-			monKeys[len(monKeys)-1].PublicAddress = address
-			monKeys[len(monKeys)-1].PrivateKey = wallets.lookupWalletSeed(address)
-		}
-
-		var totalDelta uint64
-		var survivorDelta uint64
-		for _, monkey := range monKeys {
-			select {
-			case <-ctx.Done():
-				log.Debugf("stopping the %s raid.", raidName)
-				break main
-			default:
-				totalCount++
-				totalDelta++
-				if matchFilters(monkey) {
-					survivorCount++
-					survivorDelta++
-					select {
-					case monkeySendChan <- monkey:
-					case <-ctx.Done():
-					}
-				}
-			}
-		}
-		deltaChan <- gui.Stats{Total: totalDelta, TotalRequests: 1, Found: survivorDelta}
-	}
-	log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
-}
-
-func outputMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats) {
-
-	var convert func(svg io.Reader) (io.Reader, error)
-	extension := "." + strings.ToLower(targetFormat)
-
-	switch format := strings.ToUpper(targetFormat); format {
-	case "PNG":
-		convert = func(svg io.Reader) (io.Reader, error) {
-			dataBytes, err := io.ReadAll(svg)
-			if err != nil {
-				return nil, err
-			}
-			data, err := legionImage.ConvertSvgToBinary(dataBytes, legionImage.PNGFormat, 250)
-			if err != nil {
-				return nil, err
-			}
-
-			return bytes.NewReader(data), nil
-		}
-	case "SVG":
-		convert = func(svg io.Reader) (io.Reader, error) {
-			return svg, nil
-		}
-	default:
-		log.Fatalf("cannot convert to format %s.", targetFormat)
-	}
-
-	for {
-
-		var monkey MonkeyStats
-		select {
-		case monkey = <-monkeyDataChan:
-		case <-ctx.Done():
-			log.Debugf("Stopping some monKey's looting.")
-			return
-		}
-
-		monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
-		if err != nil {
-			log.Warnf("lost a monkey %s", err)
-			continue
-		}
-
-		targetName := monkey.SillyName + "_" + monkey.PublicAddress
-		targetJson := path.Join(targetDir, targetName) + ".json"
-
-		var targetImgFile string = path.Join(targetDir, targetName) + extension
-
-		jsonData, err := json.MarshalIndent(monkey, "", "  ")
-		if err != nil {
-			log.Fatalf("couldn't marshal monKey %s", monkey.SillyName)
-		}
-		err = ioutil.WriteFile(targetJson, jsonData, 0600)
-		if err != nil {
-			log.Fatalf("could now write monkey, sad %s: %s", monkey.SillyName, err)
-		}
-		monkeyConverted, err := convert(monkeySVG)
-		if err != nil {
-			log.Fatalf("could not convert monkey image, sad monkey %s: %s", monkey.SillyName, err)
-		}
-		monkeyData, err := io.ReadAll(monkeyConverted)
-		if err != nil {
-			log.Fatalf("could not write monkey image, sad monkey %s: %s", monkey.SillyName, err)
-		}
-		err = ioutil.WriteFile(targetImgFile, monkeyData, 0600)
-		if err != nil {
-			log.Fatalf("could now write monkey, sad monkey %s: %s", monkey.SillyName, err)
-		}
-
-	}
-}
-func previewMonkeys(ctx context.Context, previewChan chan<- gui.MonkeyPreview, monkeyDataChan <-chan MonkeyStats, wg *sync.WaitGroup) {
-	defer wg.Done()
-	if monkeyDataChan == nil {
-		return
-	}
-	for {
-		select {
-		case monkey := <-monkeyDataChan:
-			// start := time.Now()
-			// grab as svg as it is nicer to the server and we can convert it locally
-			monkeySVG, err := bananoutils.GrabMonkey(ctx, bananoutils.Account(monkey.PublicAddress), legionImage.SVGFormat)
-			if err != nil {
-				log.Warnf("could not convert monkey to preview: %s %s", monkey.SillyName, err)
-				continue
-			}
-			data, err := io.ReadAll(monkeySVG)
-			if err != nil {
-				log.Warnf("could not read data for moneky to preview: %s %s", monkey.SillyName, err)
-				continue
-			}
-
-			imagePNG, err := legionImage.ConvertSvgToBinary(data, legionImage.PNGFormat, 250)
-			if err != nil {
-				log.Warnf("could not convert svg monkey image to png data to display: %s %s", monkey.SillyName, err)
-				continue
-			}
-
-			img, _, err := image.Decode(bytes.NewReader(imagePNG))
-			if err != nil {
-				log.Warnf("could not decode image data to display for monkey: %s %s", monkey.SillyName, err)
-				continue
-			}
-			select {
-			case previewChan <- gui.MonkeyPreview{Image: img, Title: monkey.SillyName}:
-			case <-ctx.Done():
-			}
-
-		case <-ctx.Done():
-			log.Debugf("stopping the monKey preview")
-			return
-		}
-	}
-
-}
-
-func processMonkeyData(ctx context.Context, targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats, monkeyNameChan chan<- string, monkeyDisplayChan chan<- MonkeyStats, wg *sync.WaitGroup) {
-	defer wg.Done()
-	outputMonkeyChan := make(chan MonkeyStats, 100)
-
-	go func() {
-		writeMonkeyWG := new(sync.WaitGroup)
-		for i := 0; i < 10; i++ {
-			writeMonkeyWG.Add(1)
-			go func() {
-				outputMonkeyData(ctx, targetDir, targetFormat, outputMonkeyChan)
-				writeMonkeyWG.Done()
-			}()
-		}
-		writeMonkeyWG.Wait()
-		// All the writers are done, so chanel needs to close
-		close(outputMonkeyChan)
-	}()
-
-main:
-	for {
-		select {
-		case <-ctx.Done():
-			break main
-		case monkey, ok := <-monkeyDataChan:
-			if !ok {
-				break main
-			}
-			monkeyNameChan <- monkey.SillyName
-			outputMonkeyChan <- monkey
-			if monkeyDisplayChan != nil {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					select {
-					case monkeyDisplayChan <- monkey:
-					case <-ctx.Done():
-						return
-					}
-				}()
-			}
-
-		}
-	}
-}
-
-func generateFlamingMonkeys(ctx context.Context, monkeysPerRequest uint, monkeyChan chan<- MonkeyStats, deltaChan chan<- gui.Stats, wg *sync.WaitGroup) {
-	defer wg.Done()
-	wg.Add(1)
-	go getMonkeyData(ctx, monkeysPerRequest, monkeyChan, deltaChan, wg)
-}
-
 func setupHttp() {
-	httpTransport = http.DefaultTransport.(*http.Transport).Clone()
+	httpTransport := http.DefaultTransport.(*http.Transport).Clone()
 	httpTransport.MaxIdleConns = 100
 	httpTransport.MaxConnsPerHost = 100
 	httpTransport.MaxIdleConnsPerHost = 100
 
-	httpClient = &http.Client{
+	httpClient := &http.Client{
 		Timeout:   120 * time.Second,
 		Transport: httpTransport,
 	}
 
+	engine.SetupHTTP(httpTransport, httpClient)
 	bananoutils.ChangeMonkeyServer(config.MonkeyServer)
 }
 
@@ -669,18 +275,18 @@ func main() {
 
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, config.HowLongToRun)
-	gui := setupGui(ctx, cancel)
+	guiInstance := setupGui(ctx, cancel)
 
 	finishedChan := make(chan struct{})
 	defer close(finishedChan)
 
 	go func() {
-		defer gui.MainHasShutdown()
-		monkeyDataChan := make(chan MonkeyStats, 1000)
+		defer guiInstance.MainHasShutdown()
+		monkeyDataChan := make(chan engine.MonkeyStats, 1000)
 		wgMonkeyDataChan := new(sync.WaitGroup)
 
 		monkeyNameChan := make(chan string, 100)
-		monkeyDisplayChan := make(chan MonkeyStats, 10)
+		monkeyDisplayChan := make(chan engine.MonkeyStats, 10)
 		wgProccessDisplayAndNameChan := new(sync.WaitGroup)
 
 		// required to finish before closing out the main gui
@@ -688,15 +294,15 @@ func main() {
 
 		for i := uint(0); i < config.MaxRequests; i++ {
 			wgMonkeyDataChan.Add(1)
-			go generateFlamingMonkeys(ctx, config.BatchSize, monkeyDataChan, gui.TotalDeltaChan(), wgMonkeyDataChan)
+			go engine.GenerateAndFilterMonkees(ctx, config.BatchSize, monkeyDataChan, guiInstance.TotalDeltaChan(), filter, wgMonkeyDataChan)
 			wgProccessDisplayAndNameChan.Add(1)
-			go processMonkeyData(ctx, targetDir, string(config.Format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProccessDisplayAndNameChan)
+			go engine.ProcessMonkeyData(ctx, targetDir, string(config.Format), monkeyDataChan, monkeyNameChan, monkeyDisplayChan, wgProccessDisplayAndNameChan)
 		}
 		PNGPreviewChanWG.Add(4)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
-		go previewMonkeys(ctx, gui.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
+		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
+		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
+		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
+		go gui.PreviewMonkeys(ctx, guiInstance.PNGPreviewChan(), monkeyDisplayChan, PNGPreviewChanWG)
 		var monkeyHeadCount uint64
 	main:
 		for {
@@ -727,5 +333,5 @@ func main() {
 	}()
 
 	go http.ListenAndServe(":8888", nil)
-	gui.Run()
+	guiInstance.Run()
 }

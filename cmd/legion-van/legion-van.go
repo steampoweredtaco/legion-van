@@ -46,6 +46,7 @@ var config struct {
 	VerboseLog     bool          `long:"verbose" description:"Changes logging to print debug."`
 	MonkeyServer   string        `long:"monkey_api" description:"To change the backend monkey server, defaults to the official one." default:"https://monkey.banano.cc"`
 	NumOfThreads   int           `long:"threads" description:"Changes number of threads to use, defaults to 2, with a decent machine this is probably all you need. Set to -1 for all hardware cpu threads available." default:"2"`
+	NoGui          bool          `long:"nogui" short:"g" description:"Do not use a terminal gui just give you the straight banano."`
 }
 
 var filter engine.CmdLineFilter
@@ -220,8 +221,8 @@ func setupLog() io.Closer {
 }
 
 func setupGui(ctx context.Context, cleanupMain context.CancelFunc) *gui.MainApp {
-	guiApp := gui.NewMainApp(ctx, cleanupMain, "legion-ban", log.StandardLogger())
-	if config.Debug {
+	guiApp := gui.NewMainApp(ctx, cleanupMain, "legion-ban", log.StandardLogger(), config.NoGui)
+	if config.Debug || config.NoGui {
 		simScreen := tcell.NewSimulationScreen("")
 		simScreen.SetSize(80, 25)
 		simScreen.Init()
@@ -335,11 +336,15 @@ func main() {
 
 		}
 		<-mainCtx.Done()
-		log.Infof("Total monKeys confirmed alive %d", guiInstance.GetTotalStat())
+		log.Infof("Total monKeys confirmed alive %d", guiInstance.GetFoundStat())
 		log.Info("Waiting for pending writes.")
 		writeWG.Wait()
 		// Logging to gui can be out of order but these lines should be serial
-		log.Infof("Raiding time up for looting them vain monKeys\nFind your monKeys and their wallets at %s\nESC to quit.", targetDir)
+		if config.NoGui {
+			log.Infof("Raiding time up for looting them vain monKeys\nFind your monKeys and their wallets at %s.", targetDir)
+		} else {
+			log.Infof("Raiding time up for looting them vain monKeys\nFind your monKeys and their wallets at %s\nESC to quit.", targetDir)
+		}
 		mrand.Seed(time.Now().UnixNano())
 		if mrand.Intn(100) == 42 {
 			log.Info("wen poem?")
@@ -347,9 +352,11 @@ func main() {
 	}()
 	go http.ListenAndServe(":8888", nil)
 	deadline, _ := mainCtx.Deadline()
+
 	go func() {
 		<-mainCtx.Done()
 		guiCancel()
 	}()
+
 	guiInstance.Run(deadline)
 }

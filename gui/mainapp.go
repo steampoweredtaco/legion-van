@@ -39,10 +39,15 @@ type MainApp struct {
 	statDeltas   chan engine.Stats
 	once         sync.Once
 	endTime      time.Time
+	pipeMode     bool
 }
 
 func (a *MainApp) GetTotalStat() uint64 {
 	return atomic.LoadUint64(&a.runtimeStats.Total)
+}
+
+func (a *MainApp) GetFoundStat() uint64 {
+	return atomic.LoadUint64(&a.runtimeStats.Found)
 }
 
 func (a *MainApp) UpdateStats(stats engine.Stats) {
@@ -88,7 +93,14 @@ func (a *MainApp) UpdateSpeed() {
 	tps := float64(total) / float64(duration.Seconds())
 	statText := fmt.Sprintf("%.2f per second", tps)
 	a.speed.SetText(statText)
-	a.app.QueueUpdateDraw(func() {}, a.speed)
+	if !a.pipeMode {
+		a.app.QueueUpdateDraw(func() {}, a.speed)
+	} else {
+		if duration == 0 {
+			return
+		}
+		fmt.Println(statText)
+	}
 }
 
 func (a *MainApp) UpdateTotal() {
@@ -103,7 +115,12 @@ func (a *MainApp) UpdateTotal() {
 	statText := fmt.Sprintf("time left %s. raid parties: %d. raided: %d. looted: %d.",
 		until.Round(time.Second), totalRequests, total, totalFound)
 	a.total.SetText(statText)
-	a.app.QueueUpdateDraw(func() {}, a.total)
+	if !a.pipeMode {
+		a.app.QueueUpdateDraw(func() {}, a.total)
+	} else {
+		fmt.Println(statText)
+	}
+
 }
 
 func (a *MainApp) SetTerminalScreen(s tcell.Screen) {
@@ -149,16 +166,21 @@ func (a *MainApp) processLogMessages() {
 		} else {
 			msg = fmt.Sprintf("[%s]: %s", strings.ToUpper(entry.Level.String()), entry.Message)
 		}
+		if !a.pipeMode {
+			a.app.QueueUpdateDraw(func() {
+				fmt.Fprintln(a.logview, msg)
+				a.logview.ScrollToEnd()
+			}, a.logview)
+		} else {
+			fmt.Println(msg)
+		}
 
-		a.app.QueueUpdateDraw(func() {
-			fmt.Fprintln(a.logview, msg)
-			a.logview.ScrollToEnd()
-		}, a.logview)
 	}
 }
 
-func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, log *logrus.Logger) *MainApp {
+func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, log *logrus.Logger, pipeMode bool) *MainApp {
 	mainApp := new(MainApp)
+	mainApp.pipeMode = pipeMode
 	mainApp.ctx, mainApp.mainCancel = ctx, mainCancel
 	mainApp.logChan = make(chan *logrus.Entry, 5)
 	log.AddHook(mainApp)
@@ -296,7 +318,20 @@ func (m *MainApp) Run(endTime time.Time) {
 		}
 	}()
 
-	m.app.Run()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		m.app.Run()
+		wg.Done()
+	}()
+	go func() {
+		if !m.pipeMode {
+			return
+		}
+		<-time.After(time.Until(endTime))
+		m.mainCancel()
+	}()
+
 	m.cleanupGui()
 }
 

@@ -73,8 +73,6 @@ func fetchManyMonkies(ctx context.Context, amount uint) (monKeys []MonkeyStats) 
 func GenerateAndFilterMonkees(ctx context.Context, monkeysPerRequest uint, filter CmdLineFilter) (monkeyStatsRecieve <-chan MonkeyStats, deltaStatsRecieve <-chan Stats) {
 	monkeyStatsChan := make(chan MonkeyStats, 1000)
 	deltaStatsChan := make(chan Stats, 5)
-	defer close(monkeyStatsChan)
-	defer close(deltaStatsChan)
 	monkeyStatsRecieve = monkeyStatsChan
 	deltaStatsRecieve = deltaStatsChan
 
@@ -83,25 +81,39 @@ func GenerateAndFilterMonkees(ctx context.Context, monkeysPerRequest uint, filte
 	raidName := strings.Title(randomdata.Adjective() + " " + randomdata.Noun())
 
 	log.Infof("Raiding with %s clan", raidName)
-	for {
+	go func() {
+		defer close(monkeyStatsChan)
+		defer close(deltaStatsChan)
 		var totalDelta uint64
 		var survivorDelta uint64
-		for _, monkey := range fetchManyMonkies(ctx, monkeysPerRequest) {
-			totalCount++
-			totalDelta++
-			if matchFilters(monkey, filter) {
-				survivorCount++
-				survivorDelta++
-				select {
-				case <-ctx.Done():
-					log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
-					return
-				case monkeyStatsChan <- monkey:
+	main:
+		for {
+			select {
+			case <-ctx.Done():
+				break main
+			default:
+			}
+			totalDelta = 0
+			survivorDelta = 0
+			for _, monkey := range fetchManyMonkies(ctx, monkeysPerRequest) {
+				totalCount++
+				totalDelta++
+				if matchFilters(monkey, filter) {
+					survivorCount++
+					survivorDelta++
+					select {
+					case <-ctx.Done():
+
+						break main
+					case monkeyStatsChan <- monkey:
+					}
 				}
 			}
+			deltaStatsChan <- Stats{Total: totalDelta, TotalRequests: 1, Found: survivorDelta}
 		}
-		deltaStatsChan <- Stats{Total: totalDelta, TotalRequests: 1, Found: survivorDelta}
-	}
+		log.Infof("The %s raided with a total of %d monkeys and %d survivor monKeys!", raidName, totalCount, survivorCount)
+	}()
+	return
 }
 
 func OutputMonkeyData(targetDir string, targetFormat string, monkeyDataChan <-chan MonkeyStats) {

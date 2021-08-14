@@ -95,7 +95,11 @@ func (a *MainApp) UpdateTotal() {
 	totalFound := atomic.LoadUint64(&a.runtimeStats.Found)
 	total := atomic.LoadUint64(&a.runtimeStats.Total)
 	totalRequests := atomic.LoadUint64(&a.runtimeStats.TotalRequests)
+
 	until := time.Until(a.endTime)
+	if until < time.Second*0 {
+		until = time.Second * 0
+	}
 	statText := fmt.Sprintf("time left %s. raid parties: %d. raided: %d. looted: %d.",
 		until.Round(time.Second), totalRequests, total, totalFound)
 	a.total.SetText(statText)
@@ -120,14 +124,14 @@ func (a *MainApp) PNGPreviewChan() (monkeyPreviewChan chan<- MonkeyPreview) {
 		case preview := <-resultMonkeyChan:
 			a.previewChan <- preview
 		case <-a.ctx.Done():
-			close(a.previewChan)
+			return
 		}
 	}()
 	return
 }
 
 func (a *MainApp) Levels() []logrus.Level {
-	return []logrus.Level{logrus.PanicLevel, logrus.FatalLevel, logrus.ErrorLevel, logrus.WarnLevel, logrus.InfoLevel}
+	return []logrus.Level{logrus.PanicLevel, logrus.FatalLevel, logrus.ErrorLevel, logrus.WarnLevel, logrus.InfoLevel, logrus.DebugLevel}
 }
 
 func (a *MainApp) Fire(entry *logrus.Entry) error {
@@ -239,8 +243,6 @@ main:
 		}
 
 	}
-	logrus.Debug("closing channel")
-	close(m.previewChan)
 	logrus.Debug("sending gui queue to stop qui")
 	m.app.QueueUpdate(func() { m.app.Stop() })
 

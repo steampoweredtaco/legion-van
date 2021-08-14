@@ -285,24 +285,20 @@ func main() {
 
 			go func() {
 				monkeyStatChan, statsDelta := engine.GenerateAndFilterMonkees(mainCtx, config.BatchSize, filter)
-				for {
-					select {
-					case monkey, ok := <-monkeyStatChan:
-						if !ok {
-							monkeyStatChan = nil
-							continue
-						}
+				go func(monkeyStatsChan <-chan engine.MonkeyStats) {
+					for monkey := range monkeyStatsChan {
 						log.Infof("Say hi to %s", monkey.SillyName)
 						monkeyFunnelChan <- monkey
-
-					case stats, ok := <-statsDelta:
-						if !ok {
-							statsDelta = nil
-							continue
-						}
-						guiInstance.UpdateStats(stats)
 					}
-				}
+				}(monkeyStatChan)
+
+				go func(statsDeltaChan <-chan engine.Stats) {
+					for stats := range statsDeltaChan {
+						guiInstance.UpdateStats(stats)
+
+					}
+
+				}(statsDelta)
 			}()
 
 			monkeyDisplayChan := make(chan engine.MonkeyStats, 1000*config.MaxRequests)
@@ -316,7 +312,11 @@ func main() {
 						return
 					case monkey := <-monkeyFunnelChan:
 						monkeyWriteDataChan <- monkey
-						monkeyDisplayChan <- monkey
+						// Skip if displaying is previews is backed up
+						select {
+						case monkeyDisplayChan <- monkey:
+						default:
+						}
 					}
 				}
 			}()
@@ -345,9 +345,11 @@ func main() {
 			log.Info("wen poem?")
 		}
 	}()
-
 	go http.ListenAndServe(":8888", nil)
 	deadline, _ := mainCtx.Deadline()
-	_ = guiCancel
+	go func() {
+		<-mainCtx.Done()
+		guiCancel()
+	}()
 	guiInstance.Run(deadline)
 }

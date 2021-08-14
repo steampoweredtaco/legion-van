@@ -258,9 +258,10 @@ func Destroy() {
 }
 func ConvertSvgToBinary(svgData []byte, format ImageFormat, size uint) ([]byte, error) {
 	mw := imagick.NewMagickWand()
+	defer mw.Destroy()
 	mw.SetImageFormat("SVG")
 	pixelWand := imagick.NewPixelWand()
-
+	defer pixelWand.Destroy()
 	pixelWand.SetColor("none")
 	mw.SetBackgroundColor(pixelWand)
 	mw.SetImageUnits(imagick.RESOLUTION_PIXELS_PER_INCH)

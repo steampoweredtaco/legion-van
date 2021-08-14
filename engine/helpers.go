@@ -36,3 +36,28 @@ func matchFilters(monkey MonkeyStats, filter CmdLineFilter) bool {
 		fitlerMatchAny(filter.Tail, monkey.Tail)
 
 }
+
+func NewRingBuffer(inCh, outCh chan interface{}) *RingBuffer {
+	return &RingBuffer{
+		inCh:  inCh,
+		outCh: outCh,
+	}
+}
+
+// RingBuffer throttle buffer for implement async channel.
+type RingBuffer struct {
+	inCh  chan interface{}
+	outCh chan interface{}
+}
+
+func (r *RingBuffer) Run() {
+	for v := range r.inCh {
+		select {
+		case r.outCh <- v:
+		default:
+			<-r.outCh // pop one item from outchan
+			r.outCh <- v
+		}
+	}
+	close(r.outCh)
+}

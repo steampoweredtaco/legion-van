@@ -15,6 +15,7 @@ import (
 	"code.rocketnine.space/tslocum/cview"
 	"github.com/gdamore/tcell/v2"
 	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/steampoweredtaco/legion-van/engine"
 )
 
@@ -137,11 +138,15 @@ func (a *MainApp) PNGPreviewChan() (monkeyPreviewChan chan<- MonkeyPreview) {
 	resultMonkeyChan := make(chan MonkeyPreview)
 	monkeyPreviewChan = resultMonkeyChan
 	go func() {
-		select {
-		case preview := <-resultMonkeyChan:
-			a.previewChan <- preview
-		case <-a.ctx.Done():
-			return
+		for {
+			select {
+			case preview := <-resultMonkeyChan:
+				log.Debug("Processing preview")
+				a.previewChan <- preview
+				log.Debug("Processing preview done")
+			case <-a.ctx.Done():
+				return
+			}
 		}
 	}()
 	return
@@ -167,6 +172,7 @@ func (a *MainApp) processLogMessages() {
 			msg = fmt.Sprintf("[%s]: %s", strings.ToUpper(entry.Level.String()), entry.Message)
 		}
 		if !a.pipeMode {
+			// Needed so this won't starve all the other updates with massive logging going on
 			a.app.QueueUpdateDraw(func() {
 				fmt.Fprintln(a.logview, msg)
 				a.logview.ScrollToEnd()
@@ -208,6 +214,7 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	flexBox.AddItem(body, 0, 3, false)
 
 	logging := cview.NewTextView()
+	logging.SetMaxLines(500)
 	flexBox.AddItem(logging, 0, 3, true)
 	mainApp.logview = logging
 	footer := cview.NewFlex()
@@ -319,7 +326,7 @@ func (m *MainApp) Run(endTime time.Time) {
 	}()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
 		m.app.Run()
 		wg.Done()
@@ -331,7 +338,7 @@ func (m *MainApp) Run(endTime time.Time) {
 		<-time.After(time.Until(endTime))
 		m.mainCancel()
 	}()
-
+	wg.Wait()
 	m.cleanupGui()
 }
 

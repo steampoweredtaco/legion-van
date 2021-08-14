@@ -12,7 +12,7 @@ import (
 	legionImage "github.com/steampoweredtaco/legion-van/image"
 )
 
-func PreviewMonkeys(previewChan chan<- MonkeyPreview, monkeyDataChan <-chan engine.MonkeyStats) {
+func PreviewMonkeys(ctx context.Context, previewChan chan<- MonkeyPreview, monkeyDataChan <-chan engine.MonkeyStats) {
 	if monkeyDataChan == nil {
 		return
 	}
@@ -44,6 +44,13 @@ func PreviewMonkeys(previewChan chan<- MonkeyPreview, monkeyDataChan <-chan engi
 			log.Warnf("could not decode image data to display for monkey: %s %s", monkey.SillyName, err)
 			continue
 		}
-		previewChan <- MonkeyPreview{Image: img, Title: monkey.SillyName}
+		log.Debug("posting image")
+		select {
+		// caller controsl the send chanel so we should get out if that is closed
+		case <-ctx.Done():
+			return
+		case previewChan <- MonkeyPreview{Image: img, Title: monkey.SillyName}:
+		}
+		log.Debug("posting image done")
 	}
 }

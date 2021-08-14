@@ -279,16 +279,33 @@ func main() {
 	guiInstance := setupGui(guiCtx, mainCancel)
 
 	var writeWG sync.WaitGroup
+	var previewWG sync.WaitGroup
+	var mainAppWG sync.WaitGroup
+	mainAppWG.Add(1)
 	go func() {
-
+		defer mainAppWG.Done()
 		monkeyFunnelChan := make(chan engine.MonkeyStats, 1000*config.MaxRequests)
 		for i := uint(0); i < config.MaxRequests; i++ {
 
 			go func() {
+				// ringer buffer is needed to supress too many logging of names.
+				inCh := make(chan interface{})
+				outCh := make(chan interface{}, 1) // try to change outCh buffer to understand the result
+				rb := engine.NewRingBuffer(inCh, outCh)
+				go rb.Run()
+
+				go func() {
+					for line := range outCh {
+						log.Info(line.(string))
+						// slow down logging of names
+						time.Sleep(time.Millisecond * 500)
+					}
+				}()
+
 				monkeyStatChan, statsDelta := engine.GenerateAndFilterMonkees(mainCtx, config.BatchSize, filter)
 				go func(monkeyStatsChan <-chan engine.MonkeyStats) {
 					for monkey := range monkeyStatsChan {
-						log.Infof("Say hi to %s", monkey.SillyName)
+						inCh <- fmt.Sprintf("Say hi to %s", monkey.SillyName)
 						monkeyFunnelChan <- monkey
 					}
 				}(monkeyStatChan)
@@ -316,6 +333,7 @@ func main() {
 						// Skip if displaying is previews is backed up
 						select {
 						case monkeyDisplayChan <- monkey:
+							// log.Debug("preview sent")
 						default:
 						}
 					}
@@ -330,14 +348,20 @@ func main() {
 				}()
 			}
 
-			go gui.PreviewMonkeys(guiInstance.PNGPreviewChan(), monkeyDisplayChan)
-			go gui.PreviewMonkeys(guiInstance.PNGPreviewChan(), monkeyDisplayChan)
-			go gui.PreviewMonkeys(guiInstance.PNGPreviewChan(), monkeyDisplayChan)
+			for i := 0; i < 3; i++ {
+				previewWG.Add(1)
+				go func() {
+					gui.PreviewMonkeys(guiCtx, guiInstance.PNGPreviewChan(), monkeyDisplayChan)
+					previewWG.Done()
+				}()
+			}
 
 		}
 		<-mainCtx.Done()
 		log.Infof("Total monKeys confirmed alive %d", guiInstance.GetFoundStat())
 		log.Info("Waiting for pending writes.")
+		writeWG.Wait()
+		log.Info("Waiting for previews to end.")
 		writeWG.Wait()
 		// Logging to gui can be out of order but these lines should be serial
 		if config.NoGui {
@@ -349,14 +373,12 @@ func main() {
 		if mrand.Intn(100) == 42 {
 			log.Info("wen poem?")
 		}
+		guiCancel()
 	}()
 	go http.ListenAndServe(":8888", nil)
 	deadline, _ := mainCtx.Deadline()
 
-	go func() {
-		<-mainCtx.Done()
-		guiCancel()
-	}()
-
 	guiInstance.Run(deadline)
+	fmt.Println("Waiting for resources to clean up this could take a minute.")
+	mainAppWG.Wait()
 }

@@ -49,6 +49,8 @@ var config struct {
 	NoGui          bool          `long:"nogui" short:"g" description:"Do not use a terminal gui just give you the straight banano."`
 }
 
+var odds = 0.0
+
 var filter engine.CmdLineFilter
 
 func printVanityFilterUsage() {
@@ -180,6 +182,8 @@ func parseFlags() {
 	filter.Tail = makeLower(filter.Tail)
 	filter.Misc = makeLower(filter.Misc)
 
+	engine.SimplifyFilters(&filter)
+	odds = engine.GetOdds(filter)
 }
 
 func setupHttp() {
@@ -221,7 +225,7 @@ func setupLog() io.Closer {
 }
 
 func setupGui(ctx context.Context, cleanupMain context.CancelFunc) *gui.MainApp {
-	guiApp := gui.NewMainApp(ctx, cleanupMain, "legion-ban", log.StandardLogger(), config.NoGui)
+	guiApp := gui.NewMainApp(ctx, cleanupMain, "legion-ban", odds, log.StandardLogger(), config.NoGui)
 	if config.Debug || config.NoGui {
 		simScreen := tcell.NewSimulationScreen("")
 		simScreen.SetSize(80, 25)
@@ -377,7 +381,7 @@ func main() {
 	}()
 	go http.ListenAndServe(":8888", nil)
 	deadline, _ := mainCtx.Deadline()
-
+	log.Infof("Odds 1 out of %.2f", odds)
 	guiInstance.Run(deadline)
 	fmt.Println("Waiting for resources to clean up this could take a minute.")
 	mainAppWG.Wait()

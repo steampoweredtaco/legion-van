@@ -41,6 +41,7 @@ type MainApp struct {
 	once         sync.Once
 	endTime      time.Time
 	pipeMode     bool
+	odds         float64
 }
 
 func (a *MainApp) GetTotalStat() uint64 {
@@ -92,7 +93,7 @@ func (a *MainApp) UpdateSpeed() {
 		a.speed.SetText("they've gone deplaid")
 	}
 	tps := float64(total) / float64(duration.Seconds())
-	statText := fmt.Sprintf("%.2f per second", tps)
+	statText := fmt.Sprintf("%.2f mps", tps)
 	a.speed.SetText(statText)
 	if !a.pipeMode {
 		a.app.QueueUpdateDraw(func() {}, a.speed)
@@ -184,8 +185,9 @@ func (a *MainApp) processLogMessages() {
 	}
 }
 
-func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, log *logrus.Logger, pipeMode bool) *MainApp {
+func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string, odds float64, log *logrus.Logger, pipeMode bool) *MainApp {
 	mainApp := new(MainApp)
+	mainApp.odds = odds
 	mainApp.pipeMode = pipeMode
 	mainApp.ctx, mainApp.mainCancel = ctx, mainCancel
 	mainApp.logChan = make(chan *logrus.Entry, 5)
@@ -221,12 +223,16 @@ func NewMainApp(ctx context.Context, mainCancel context.CancelFunc, title string
 	speed := cview.NewTextView()
 	speed.SetTextAlign(cview.AlignRight)
 	speed.SetText("engaged")
+	oddsV := cview.NewTextView()
+	oddsV.SetTextAlign(cview.AlignRight)
+	oddsV.SetText(fmt.Sprintf("chances 1 in %.2f", odds))
 	mainApp.speed = speed
 	total := cview.NewTextView()
 	total.SetTextAlign(cview.AlignLeft)
 	total.SetText("readying the hordes")
 	mainApp.total = total
 	footer.AddItem(total, 0, 3, false)
+	footer.AddItem(oddsV, 0, 1, false)
 	footer.AddItem(speed, 0, 1, false)
 	flexBox.AddItem(footer, 1, 0, false)
 	mainApp.app.SetRoot(flexBox, true)

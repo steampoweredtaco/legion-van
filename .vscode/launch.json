@@ -14,7 +14,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/legion-van/legion-van.go",
-            "args": ["--image_format", "png", "--monkey_api=http://monkeyapi:5555", "--duration", "1h"] ,
+            "args": ["--image_format", "png", "-M", "flame", "--monkey_api=http://monkeyapi:5555", "--duration", "1h"] ,
             "console": "internalConsole"
         },
         {

@@ -25,8 +25,8 @@ import (
 	legionImage "github.com/steampoweredtaco/legion-van/image"
 )
 
-func (*targetFormat) String() string {
-	return "svg"
+func (t *targetFormat) String() string {
+	return string(*t)
 }
 
 func (targetFmt *targetFormat) UnmarshalFlag(value string) error {

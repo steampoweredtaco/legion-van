@@ -10,12 +10,12 @@ Want to talk with us more about banano? [Join Us!](https://chat.banano.cc/)
 * Find any **official** visual monKey representation given enough time and produce the private banano wallet seed, picture, and json stats about found monKey.
 * A gui in a terminal, say what now?
 * Can output svg or png files of found monKey.
+* Display the odds of finding monKey with supplied filter.
 * Fine tune of cpu usage and network utilization for testing monKeys.
 * Lots of potassium.
 * Attempts of humor.
 
 # Upcomming Features
-* Display the odds of finding monKey with supplied filter.
 * Pipe nano vanity generator output into command and test for monKey. This provides a way to get a text and visual vanity, but probably a bit slowly.
 
 # TODO to get out of Beta (pull requests welcome)

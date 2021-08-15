@@ -87,6 +87,9 @@ func (a *MainApp) UpdateTotalRequestsStat(additional uint64) {
 }
 
 func (a *MainApp) UpdateSpeed() {
+	if a.endTime.Before(time.Now()) {
+		return
+	}
 	total := atomic.LoadUint64(&a.runtimeStats.Total)
 	duration := time.Since(a.runtimeStats.Started)
 	if duration == 0 {
